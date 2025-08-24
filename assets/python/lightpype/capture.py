@@ -12,15 +12,13 @@ import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
 from scipy.signal import find_peaks
 from datetime import datetime
+import time
+from PIL import Image
 
 
 class Spectrometer:
     def __init__(self, camera_index=0):
-        self.camera = cv2.VideoCapture(camera_index)
-        if not self.camera.isOpened():
-            raise RuntimeError("Cannot open camera")
-
-        # Default settings
+        # First initialize settings with defaults
         self.settings = {
             'exposure': -1,  # -1 = automatic
             'gain': 0,
@@ -44,12 +42,55 @@ class Spectrometer:
         self.reflectance = None
         self.calibration_points = []
         self.capture_start_time = None
+        self.available_cameras = []
+
+        # Now initialize camera
+        self.camera_index = camera_index
+        self.camera = None
+        self.open_camera(camera_index)
 
         # Try to load config
         try:
             self.load_config()
         except:
             print("Using default settings")
+
+    def detect_cameras(self):
+        """Detect available cameras by testing indices 0-10"""
+        cameras = []
+        for i in range(11):
+            cap = cv2.VideoCapture(i)
+            if cap.isOpened():
+                try:
+                    ret, frame = cap.read()
+                    if ret:
+                        cameras.append(i)
+                except:
+                    pass
+                finally:
+                    cap.release()
+        return cameras
+
+    def open_camera(self, index):
+        """Open a camera by index"""
+        if self.camera:
+            self.camera.release()
+
+        # Create camera object
+        self.camera = cv2.VideoCapture(index)
+        if not self.camera.isOpened():
+            print(f"Failed to open camera index {index}")
+            return False
+
+        # Set default frame size
+        try:
+            self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+            self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        except:
+            print("Warning: Could not set default frame size")
+
+        self.settings['roi'] = (0, 0, 1280, 720)
+        return True
 
     def load_config(self):
         if os.path.exists("spectrometer_config.json"):
@@ -61,22 +102,38 @@ class Spectrometer:
             json.dump(self.settings, f, indent=4)
 
     def set_exposure(self, exposure):
-        self.camera.set(cv2.CAP_PROP_EXPOSURE, exposure)
-        self.settings['exposure'] = exposure
+        if self.camera and self.camera.isOpened():
+            self.camera.set(cv2.CAP_PROP_EXPOSURE, exposure)
+            self.settings['exposure'] = exposure
 
     def capture_frame(self):
+        if not self.camera or not self.camera.isOpened():
+            # Return a blank frame in demo mode
+            frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+            cv2.putText(frame, "No Camera", (50, 360),
+                        cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 255, 255), 3)
+            return frame
+
         ret, frame = self.camera.read()
         if ret:
             self.current_frame = frame
         return self.current_frame
 
     def extract_profile(self, frame, sensitivity_line=None, window_height=None):
-        line = sensitivity_line or self.settings['sensitivity_line']
-        height = window_height or self.settings['window_height']
+        if frame is None:
+            return None
+
+        line = int(sensitivity_line or self.settings['sensitivity_line'])
+        height = int(window_height or self.settings['window_height'])
 
         # Extract region of interest
         roi = self.settings['roi']
         x, y, w, h = roi
+
+        # Ensure ROI is within frame bounds
+        h = min(h, frame.shape[0] - y)
+        w = min(w, frame.shape[1] - x)
+
         region = frame[y:y + h, x:x + w]
 
         # Convert to grayscale
@@ -85,12 +142,20 @@ class Spectrometer:
         # Extract profile with averaging
         start_line = max(0, line - height // 2)
         end_line = min(gray.shape[0], line + height // 2 + 1)
+
+        # Ensure valid slice indices
+        start_line = int(start_line)
+        end_line = int(end_line)
+
         profile = np.mean(gray[start_line:end_line, :], axis=0)
 
         self.profile = profile
         return profile
 
     def process_profile(self, profile):
+        if profile is None:
+            return np.arange(0), np.zeros(0)
+
         # Apply dark frame correction
         if self.settings['dark_frame'] is not None:
             profile = profile - self.settings['dark_frame']
@@ -122,7 +187,7 @@ class Spectrometer:
 
         profiles = []
         exposures = self.settings['hdr_exposures']
-        self.capture_start_time = datetime.now()
+        self.capture_start_time = time.time()
 
         for exp in exposures:
             self.set_exposure(exp)
@@ -183,9 +248,9 @@ class Spectrometer:
 
 
 class SpectrometerGUI:
-    def __init__(self, spectrometer):
+    def __init__(self):
         pygame.init()
-        self.spec = spectrometer
+        self.spec = Spectrometer(-1)  # Initialize with invalid index
         self.screen_width = 1200
         self.screen_height = 800
         self.screen = pygame.display.set_mode((self.screen_width, self.screen_height))
@@ -211,6 +276,8 @@ class SpectrometerGUI:
             'save': pygame.Rect(500, 20, 100, 40),
             'calibrate': pygame.Rect(620, 20, 100, 40),
             'clear_calib': pygame.Rect(740, 20, 100, 40),
+            'refresh_cam': pygame.Rect(20, 200, 150, 40),
+            'select_cam': pygame.Rect(20, 250, 150, 40),
         }
 
         self.checkboxes = {
@@ -219,16 +286,58 @@ class SpectrometerGUI:
         }
 
         self.sliders = {
-            'sensitivity': {'rect': pygame.Rect(20, 100, 200, 20), 'value': self.spec.settings['sensitivity_line'],
-                            'min': 0, 'max': self.spec.settings['roi'][3]},
-            'window': {'rect': pygame.Rect(20, 140, 200, 20), 'value': self.spec.settings['window_height'], 'min': 1,
-                       'max': 100},
+            'sensitivity': {'rect': pygame.Rect(20, 100, 200, 20), 'value': 240, 'min': 0, 'max': 720},
+            'window': {'rect': pygame.Rect(20, 140, 200, 20), 'value': 10, 'min': 1, 'max': 100},
         }
 
         # Plot surfaces
         self.camera_surface = None
         self.spectrum_surface = None
         self.reflectance_surface = None
+
+        # Camera selection
+        self.camera_list = self.detect_cameras()
+        self.selected_camera = 0
+        self.init_cameras()
+
+    def detect_cameras(self):
+        """Detect available cameras by testing indices 0-10"""
+        cameras = []
+        # Try default camera first
+        try:
+            cap = cv2.VideoCapture(0)
+            if cap.isOpened() and cap.read()[0]:
+                cameras.append(0)
+            cap.release()
+        except:
+            pass
+
+        # Try additional indices
+        for i in range(1, 11):
+            try:
+                cap = cv2.VideoCapture(i)
+                if cap.isOpened() and cap.read()[0]:
+                    cameras.append(i)
+                cap.release()
+            except:
+                continue
+        return cameras or [0]  # Always include index 0 as fallback
+
+    def init_cameras(self):
+        """Initialize available cameras"""
+        # Try each detected camera
+        for cam_idx in self.camera_list:
+            try:
+                # Try to open camera
+                self.spec.open_camera(cam_idx)
+                if self.spec.camera.isOpened():
+                    self.selected_camera = cam_idx
+                    print(f"Using camera index: {cam_idx}")
+                    return
+            except Exception as e:
+                print(f"Error initializing camera {cam_idx}: {e}")
+
+        print("No working cameras found, using fallback mode")
 
     def draw_button(self, rect, text, hover=False):
         color = self.BUTTON_HOVER if hover else self.BUTTON_COLOR
@@ -268,7 +377,7 @@ class SpectrometerGUI:
         if not self.spec.hdr_mode or not self.spec.capture_start_time:
             return
 
-        elapsed = (datetime.now() - self.spec.capture_start_time).total_seconds()
+        elapsed = time.time() - self.spec.capture_start_time
         progress = min(elapsed / duration, 1.0)
 
         bar_rect = pygame.Rect(20, 180, 400, 20)
@@ -284,7 +393,10 @@ class SpectrometerGUI:
 
     def update_camera_display(self, frame):
         if frame is None:
-            return
+            # Create blank frame for demo mode
+            frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+            cv2.putText(frame, "No Camera", (50, 360),
+                        cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 255, 255), 3)
 
         # Resize frame to fit display area
         display_rect = pygame.Rect(450, 100, 700, 400)
@@ -295,8 +407,11 @@ class SpectrometerGUI:
         self.camera_surface = pygame.surfarray.make_surface(rgb_frame.transpose([1, 0, 2]))
 
         # Draw sensitivity line
-        line_pos = int(self.sliders['sensitivity']['value'] * display_rect.height / self.spec.settings['roi'][3])
-        window_height = self.sliders['window']['value']
+        roi_height = self.spec.settings['roi'][3] or 720
+        line_pos = int(self.sliders['sensitivity']['value'] * display_rect.height / roi_height)
+        line_pos = max(0, min(display_rect.height, line_pos))
+
+        window_height = int(self.sliders['window']['value'])
 
         # Draw ROI rectangle
         pygame.draw.rect(self.screen, (0, 255, 0), display_rect, 2)
@@ -316,7 +431,7 @@ class SpectrometerGUI:
         pygame.draw.rect(
             self.camera_surface,
             (0, 150, 255),
-            (0, start_y, display_rect.width, end_y - start_y),
+            (0, int(start_y), display_rect.width, int(end_y - start_y)),
             1
         )
 
@@ -341,9 +456,23 @@ class SpectrometerGUI:
         canvas = agg.FigureCanvasAgg(fig)
         canvas.draw()
         renderer = canvas.get_renderer()
-        raw_data = renderer.tostring_rgb()
 
-        size = canvas.get_width_height()
+        # Correct rendering for matplotlib versions
+        try:
+            # Older matplotlib versions
+            raw_data = renderer.tostring_rgb()
+            size = (int(renderer.width), int(renderer.height))
+        except AttributeError:
+            # Newer versions
+            raw_data = canvas.buffer_rgba()
+            width = int(renderer.width)
+            height = int(renderer.height)
+            size = (width, height)
+            # Convert RGBA to RGB using PIL
+            img = Image.frombytes('RGBA', size, raw_data)
+            img = img.convert('RGB')
+            raw_data = img.tobytes()
+
         self.spectrum_surface = pygame.image.fromstring(raw_data, size, "RGB")
         plt.close(fig)
 
@@ -363,9 +492,23 @@ class SpectrometerGUI:
         canvas = agg.FigureCanvasAgg(fig)
         canvas.draw()
         renderer = canvas.get_renderer()
-        raw_data = renderer.tostring_rgb()
 
-        size = canvas.get_width_height()
+        # Correct rendering for matplotlib versions
+        try:
+            # Older matplotlib versions
+            raw_data = renderer.tostring_rgb()
+            size = (int(renderer.width), int(renderer.height))
+        except AttributeError:
+            # Newer versions
+            raw_data = canvas.buffer_rgba()
+            width = int(renderer.width)
+            height = int(renderer.height)
+            size = (width, height)
+            # Convert RGBA to RGB using PIL
+            img = Image.frombytes('RGBA', size, raw_data)
+            img = img.convert('RGB')
+            raw_data = img.tobytes()
+
         self.reflectance_surface = pygame.image.fromstring(raw_data, size, "RGB")
         plt.close(fig)
 
@@ -419,6 +562,17 @@ class SpectrometerGUI:
                                 self.spec.calibration_mode = not self.spec.calibration_mode
                             elif name == 'clear_calib':
                                 self.spec.clear_calibration()
+                            elif name == 'refresh_cam':
+                                self.camera_list = self.detect_cameras()
+                                if self.camera_list:
+                                    self.selected_camera = self.camera_list[0]
+                            elif name == 'select_cam':
+                                if self.camera_list:
+                                    # Cycle through available cameras
+                                    current_idx = self.camera_list.index(self.selected_camera)
+                                    next_idx = (current_idx + 1) % len(self.camera_list)
+                                    self.selected_camera = self.camera_list[next_idx]
+                                    self.spec.open_camera(self.selected_camera)
 
                     # Check checkboxes
                     for name, rect in self.checkboxes.items():
@@ -473,6 +627,8 @@ class SpectrometerGUI:
                 text = name.capitalize()
                 if name == 'play':
                     text = "Pause" if self.spec.running else "Play"
+                elif name == 'select_cam':
+                    text = f"Cam: {self.selected_camera}"
                 self.draw_button(rect, text, hover)
 
             # Draw checkboxes
@@ -488,6 +644,16 @@ class SpectrometerGUI:
                 self.screen.blit(label_surf, (slider['rect'].x, slider['rect'].y - 25))
                 self.draw_slider(slider)
 
+            # Draw camera list info
+            cam_text = f"Available cameras: {self.camera_list}"
+            cam_surf = self.small_font.render(cam_text, True, self.TEXT_COLOR)
+            self.screen.blit(cam_surf, (20, 160))
+
+            # Current camera info
+            cam_text = f"Selected camera: {self.selected_camera}"
+            cam_surf = self.small_font.render(cam_text, True, self.TEXT_COLOR)
+            self.screen.blit(cam_surf, (20, 180))
+
             # Capture and process frame
             if self.spec.running:
                 if self.spec.hdr_mode:
@@ -495,7 +661,7 @@ class SpectrometerGUI:
                     self.draw_progress_bar(total_duration)
 
                     if self.spec.capture_start_time:
-                        elapsed = (datetime.now() - self.spec.capture_start_time).total_seconds()
+                        elapsed = time.time() - self.spec.capture_start_time
                         if elapsed >= total_duration:
                             profile = self.spec.capture_hdr()
                             self.spec.capture_start_time = None
@@ -519,7 +685,8 @@ class SpectrometerGUI:
 
                     # Update displays
                     self.update_camera_display(frame)
-                    self.update_spectrum_plot(wavelengths, processed)
+                    if wavelengths is not None and processed is not None:
+                        self.update_spectrum_plot(wavelengths, processed)
                     if self.spec.reflectance is not None:
                         self.update_reflectance_plot(wavelengths, self.spec.reflectance)
 
@@ -530,10 +697,12 @@ class SpectrometerGUI:
 
 if __name__ == "__main__":
     try:
-        spec = Spectrometer()
-        gui = SpectrometerGUI(spec)
+        gui = SpectrometerGUI()
         gui.run()
     except Exception as e:
         print(f"Error: {e}")
+        import traceback
+
+        traceback.print_exc()
         pygame.quit()
         sys.exit()
