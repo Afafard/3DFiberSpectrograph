@@ -6,6 +6,7 @@ import os
 import json
 import matplotlib
 
+# Use non-interactive backend for rendering plots without a GUI window
 matplotlib.use("Agg")
 import matplotlib.backends.backend_agg as agg
 import matplotlib.pyplot as plt
@@ -17,14 +18,18 @@ from PIL import Image
 
 
 class Spectrometer:
+    """
+    Core class handling camera acquisition, calibration,
+    HDR processing and spectral data manipulation.
+    """
     def __init__(self, camera_index=0):
-        # First initialize settings with defaults
+        # Initialize default settings for the spectrometer
         self.settings = {
-            'exposure': -1,  # -1 = automatic
+            'exposure': -1,  # -1 = automatic exposure
             'gain': 0,
-            'roi': (0, 0, 1280, 720),
+            'roi': (0, 0, 1280, 720),  # Region of interest in the captured frame
             'calibration': {'wavelength': [], 'pixel': []},
-            'hdr_exposures': [10, 30, 60, 100],
+            'hdr_exposures': [10, 30, 60, 100],  # Exposure times for HDR capture
             'sensitivity_line': 240,
             'window_height': 10,
             'clipping_threshold': 240,
@@ -32,31 +37,31 @@ class Spectrometer:
             'reference': None
         }
 
-        self.running = True
-        self.calibration_mode = False
-        self.hdr_mode = False
-        self.current_frame = None
-        self.profile = None
-        self.wavelengths = None
-        self.processed = None
-        self.reflectance = None
-        self.calibration_points = []
-        self.capture_start_time = None
-        self.available_cameras = []
+        self.running = True               # Controls live acquisition loop
+        self.calibration_mode = False     # Flag for interactive calibration
+        self.hdr_mode = False             # HDR capture mode flag
+        self.current_frame = None         # Latest raw frame from camera
+        self.profile = None               # Extracted intensity profile (1D)
+        self.wavelengths = None           # Wavelength axis after calibration
+        self.processed = None              # Profile after dark/reference correction
+        self.reflectance = None           # Reflectance calculated from reference
+        self.calibration_points = []      # List of user‑added calibration points
+        self.capture_start_time = None    # Timestamp for HDR capture start
+        self.available_cameras = []       # Detected camera indices
 
-        # Now initialize camera
+        # Initialize the camera based on provided index
         self.camera_index = camera_index
         self.camera = None
         self.open_camera(camera_index)
 
-        # Try to load config
+        # Attempt to load previously saved configuration; fallback to defaults
         try:
             self.load_config()
         except:
             print("Using default settings")
 
     def detect_cameras(self):
-        """Detect available cameras by testing indices 0-10"""
+        """Detect available cameras by testing indices 0‑10."""
         cameras = []
         for i in range(11):
             cap = cv2.VideoCapture(i)
@@ -64,7 +69,7 @@ class Spectrometer:
                 try:
                     ret, frame = cap.read()
                     if ret:
-                        cameras.append(i)
+                        cameras.append(i)   # Camera responded with a frame
                 except:
                     pass
                 finally:
@@ -72,43 +77,51 @@ class Spectrometer:
         return cameras
 
     def open_camera(self, index):
-        """Open a camera by index"""
+        """Open a camera by its index."""
         if self.camera:
-            self.camera.release()
+            self.camera.release()  # Release previously opened camera
 
-        # Create camera object
+        # Create new VideoCapture object
         self.camera = cv2.VideoCapture(index)
         if not self.camera.isOpened():
             print(f"Failed to open camera index {index}")
             return False
 
-        # Set default frame size
+        # Attempt to set a default resolution (1280x720)
         try:
             self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
             self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
         except:
             print("Warning: Could not set default frame size")
 
+        # Update ROI settings to match the chosen resolution
         self.settings['roi'] = (0, 0, 1280, 720)
         return True
 
     def load_config(self):
+        """Load configuration from JSON file if it exists."""
         if os.path.exists("spectrometer_config.json"):
             with open("spectrometer_config.json", 'r') as f:
                 self.settings = json.load(f)
 
     def save_config(self):
+        """Persist current settings to a JSON file."""
         with open("spectrometer_config.json", 'w') as f:
             json.dump(self.settings, f, indent=4)
 
     def set_exposure(self, exposure):
+        """Set camera exposure (if supported)."""
         if self.camera and self.camera.isOpened():
             self.camera.set(cv2.CAP_PROP_EXPOSURE, exposure)
             self.settings['exposure'] = exposure
 
     def capture_frame(self):
+        """
+        Capture a single frame from the camera.
+        Returns a blank placeholder image when no camera is available.
+        """
         if not self.camera or not self.camera.isOpened():
-            # Return a blank frame in demo mode
+            # Demo mode: generate black image with text
             frame = np.zeros((720, 1280, 3), dtype=np.uint8)
             cv2.putText(frame, "No Camera", (50, 360),
                         cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 255, 255), 3)
@@ -120,56 +133,68 @@ class Spectrometer:
         return self.current_frame
 
     def extract_profile(self, frame, sensitivity_line=None, window_height=None):
+        """
+        Extract a 1‑D intensity profile from a region of interest.
+        Parameters allow overriding the default sensitivity line and window height.
+        """
         if frame is None:
             return None
 
+        # Determine line (vertical position) and averaging window size
         line = int(sensitivity_line or self.settings['sensitivity_line'])
         height = int(window_height or self.settings['window_height'])
 
-        # Extract region of interest
+        # Extract ROI based on settings
         roi = self.settings['roi']
         x, y, w, h = roi
 
-        # Ensure ROI is within frame bounds
+        # Clamp ROI dimensions to frame bounds
         h = min(h, frame.shape[0] - y)
         w = min(w, frame.shape[1] - x)
 
         region = frame[y:y + h, x:x + w]
 
-        # Convert to grayscale
+        # Convert region to grayscale for intensity analysis
         gray = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
 
-        # Extract profile with averaging
+        # Compute averaging window around the sensitivity line
         start_line = max(0, line - height // 2)
         end_line = min(gray.shape[0], line + height // 2 + 1)
 
-        # Ensure valid slice indices
+        # Ensure slice indices are integers
         start_line = int(start_line)
         end_line = int(end_line)
 
+        # Average pixel values across the window to produce a profile
         profile = np.mean(gray[start_line:end_line, :], axis=0)
 
         self.profile = profile
         return profile
 
     def process_profile(self, profile):
+        """
+        Apply dark frame subtraction, reference normalization,
+        and wavelength calibration to the raw profile.
+        Returns calibrated wavelengths and processed intensity values.
+        """
         if profile is None:
+            # Return empty arrays when no data is available
             return np.arange(0), np.zeros(0)
 
-        # Apply dark frame correction
+        # Dark frame correction (subtract background)
         if self.settings['dark_frame'] is not None:
             profile = profile - self.settings['dark_frame']
-            profile = np.clip(profile, 0, None)
+            profile = np.clip(profile, 0, None)  # Prevent negative values
 
-        # Apply intensity calibration
+        # Reference normalization (divide by reference spectrum)
         if self.settings['reference'] is not None:
             ref = self.settings['reference']
             profile = profile / ref
-            profile = np.clip(profile, 0, 1)
+            profile = np.clip(profile, 0, 1)   # Clamp to [0, 1] range
 
         self.processed = profile
 
-        # Apply wavelength calibration if available
+        # Wavelength calibration using stored pixel‑wavelength pairs
         if self.settings['calibration']['pixel'] and self.settings['calibration']['wavelength']:
             calib_pixels = self.settings['calibration']['pixel']
             calib_wavelengths = self.settings['calibration']['wavelength']
@@ -177,54 +202,67 @@ class Spectrometer:
                                    kind='linear', fill_value='extrapolate')
             self.wavelengths = interp_func(np.arange(len(profile)))
         else:
+            # Fallback: use pixel index as wavelength placeholder
             self.wavelengths = np.arange(len(profile))
 
         return self.wavelengths, profile
 
     def capture_hdr(self):
+        """
+        Perform High Dynamic Range (HDR) acquisition.
+        If HDR mode is disabled, simply returns a single-profile extraction.
+        """
         if not self.hdr_mode:
+            # Non‑HDR: extract profile from a single frame
             return self.extract_profile(self.capture_frame())
 
         profiles = []
         exposures = self.settings['hdr_exposures']
-        self.capture_start_time = time.time()
+        self.capture_start_time = time.time()  # Record start for progress display
 
         for exp in exposures:
-            self.set_exposure(exp)
+            self.set_exposure(exp)               # Set camera exposure
             frame = self.capture_frame()
             profile = self.extract_profile(frame)
             profiles.append(profile)
 
-        # Weight by exposure time
+        # Weight each profile by its relative exposure duration
         weights = np.array(exposures) / max(exposures)
         combined = np.zeros_like(profiles[0])
 
         for i, profile in enumerate(profiles):
             combined += profile * weights[i]
 
+        # Average the weighted sum to produce final HDR profile
         return combined / len(profiles)
 
     def capture_dark_frame(self):
+        """Capture a dark frame (no illumination) and store it as calibration."""
         frame = self.capture_frame()
         profile = self.extract_profile(frame)
         self.settings['dark_frame'] = profile
         self.save_config()
 
     def capture_reference(self):
+        """Capture a reference spectrum for reflectance calculations."""
         frame = self.capture_frame()
         profile = self.extract_profile(frame)
         self.settings['reference'] = profile
         self.save_config()
 
     def calculate_reflectance(self, sample_profile):
+        """
+        Compute reflectance by dividing the processed sample spectrum
+        by the processed reference spectrum.
+        """
         if self.settings['reference'] is None:
             return None
 
-        # Process both profiles
+        # Process both reference and sample profiles
         _, ref_processed = self.process_profile(self.settings['reference'])
         _, sample_processed = self.process_profile(sample_profile)
 
-        # Avoid division by zero
+        # Avoid division by zero by enforcing a minimum value
         ref_processed = np.maximum(ref_processed, 1e-6)
         reflectance = sample_processed / ref_processed
 
@@ -232,52 +270,65 @@ class Spectrometer:
         return reflectance
 
     def detect_peaks(self, profile, min_height=10, distance=10):
+        """Detect spectral peaks using SciPy's find_peaks."""
         peaks, _ = find_peaks(profile, height=min_height, distance=distance)
         return peaks
 
     def add_calibration_point(self, pixel, wavelength):
+        """
+        Add a new calibration point (pixel ↔ wavelength) to the stored list.
+        Persists changes to configuration file.
+        """
         self.calibration_points.append((pixel, wavelength))
         self.settings['calibration']['pixel'].append(pixel)
         self.settings['calibration']['wavelength'].append(wavelength)
         self.save_config()
 
     def clear_calibration(self):
+        """Reset all calibration data."""
         self.calibration_points = []
         self.settings['calibration'] = {'wavelength': [], 'pixel': []}
         self.save_config()
 
 
 class SpectrometerGUI:
+    """
+    Pygame‑based graphical user interface for the spectrometer.
+    Handles UI elements, camera interaction, and real‑time plotting.
+    """
     def __init__(self):
         pygame.init()
-        self.spec = Spectrometer(-1)  # Initialize with invalid index
+        # Initialize spectrometer with an invalid index; will be set later
+        self.spec = Spectrometer(-1)
         self.screen_width = 1200
         self.screen_height = 800
         self.screen = pygame.display.set_mode((self.screen_width, self.screen_height))
         pygame.display.set_caption("Spectrometer")
 
+        # Font definitions for UI text
         self.font = pygame.font.SysFont('Arial', 20)
         self.small_font = pygame.font.SysFont('Arial', 16)
 
-        # Colors
-        self.BG_COLOR = (30, 30, 40)
-        self.PANEL_COLOR = (50, 50, 60)
-        self.BUTTON_COLOR = (70, 130, 180)
-        self.BUTTON_HOVER = (100, 160, 210)
-        self.TEXT_COLOR = (220, 220, 220)
-        self.GRID_COLOR = (80, 80, 90)
+        # Define color palette used throughout the GUI
+        self.BG_COLOR = (30, 30, 40)          # Background
+        self.PANEL_COLOR = (50, 50, 60)       # Panels
+        self.BUTTON_COLOR = (70, 130, 180)    # Buttons
+        self.BUTTON_HOVER = (100, 160, 210)   # Hovered button
+        self.TEXT_COLOR = (220, 220, 220)     # Text
+        self.GRID_COLOR = (80, 80, 90)       # Grid lines
 
-        # UI elements
+        # UI element rectangles for buttons, checkboxes, sliders
+        # Updated positions to add spacing between elements
         self.buttons = {
             'play': pygame.Rect(20, 20, 100, 40),
-            'hdr': pygame.Rect(140, 20, 100, 40),
-            'dark': pygame.Rect(260, 20, 100, 40),
-            'reference': pygame.Rect(380, 20, 100, 40),
-            'save': pygame.Rect(500, 20, 100, 40),
-            'calibrate': pygame.Rect(620, 20, 100, 40),
-            'clear_calib': pygame.Rect(740, 20, 100, 40),
+            'hdr': pygame.Rect(140, 20, 100, 40),          # 20px gap from previous
+            'dark': pygame.Rect(260, 20, 100, 40),         # 20px gap
+            'reference': pygame.Rect(380, 20, 100, 40),    # 20px gap
+            'save': pygame.Rect(500, 20, 100, 40),        # 20px gap
+            'calibrate': pygame.Rect(620, 20, 100, 40),   # 20px gap
+            'clear_calib': pygame.Rect(740, 20, 100, 40), # 20px gap
             'refresh_cam': pygame.Rect(20, 200, 150, 40),
-            'select_cam': pygame.Rect(20, 250, 150, 40),
+            'select_cam': pygame.Rect(20, 260, 150, 40),   # moved down to avoid overlap with refresh button
         }
 
         self.checkboxes = {
@@ -286,16 +337,19 @@ class SpectrometerGUI:
         }
 
         self.sliders = {
-            'sensitivity': {'rect': pygame.Rect(20, 100, 200, 20), 'value': 240, 'min': 0, 'max': 720},
-            'window': {'rect': pygame.Rect(20, 140, 200, 20), 'value': 10, 'min': 1, 'max': 100},
+            # Shift sliders down to give more vertical space
+            'sensitivity': {'rect': pygame.Rect(20, 120, 200, 20), 'value': 240,
+                           'min': 0, 'max': 720},
+            'window': {'rect': pygame.Rect(20, 160, 200, 20), 'value': 10,
+                       'min': 1, 'max': 100},
         }
 
-        # Plot surfaces
+        # Plot surfaces will hold rendered Matplotlib images
         self.camera_surface = None
         self.spectrum_surface = None
         self.reflectance_surface = None
 
-        # Camera selection
+        # Detect available cameras and initialise the first working one
         self.camera_list = self.detect_cameras()
         self.selected_camera = 0
         self.init_cameras()
