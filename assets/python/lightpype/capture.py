@@ -318,17 +318,16 @@ class SpectrometerGUI:
         self.GRID_COLOR = (80, 80, 90)       # Grid lines
 
         # UI element rectangles for buttons, checkboxes, sliders
-        # Updated positions to add spacing between elements
         self.buttons = {
             'play': pygame.Rect(20, 20, 100, 40),
-            'hdr': pygame.Rect(140, 20, 100, 40),          # 20px gap from previous
-            'dark': pygame.Rect(260, 20, 100, 40),         # 20px gap
-            'reference': pygame.Rect(380, 20, 100, 40),    # 20px gap
-            'save': pygame.Rect(500, 20, 100, 40),        # 20px gap
-            'calibrate': pygame.Rect(620, 20, 100, 40),   # 20px gap
-            'clear_calib': pygame.Rect(740, 20, 100, 40), # 20px gap
+            'hdr': pygame.Rect(140, 20, 100, 40),
+            'dark': pygame.Rect(260, 20, 100, 40),
+            'reference': pygame.Rect(380, 20, 100, 40),
+            'save': pygame.Rect(500, 20, 100, 40),
+            'calibrate': pygame.Rect(620, 20, 100, 40),
+            'clear_calib': pygame.Rect(740, 20, 100, 40),
             'refresh_cam': pygame.Rect(20, 200, 150, 40),
-            'select_cam': pygame.Rect(20, 260, 150, 40),   # moved down to avoid overlap with refresh button
+            'select_cam': pygame.Rect(20, 250, 150, 40),
         }
 
         self.checkboxes = {
@@ -337,10 +336,9 @@ class SpectrometerGUI:
         }
 
         self.sliders = {
-            # Shift sliders down to give more vertical space
-            'sensitivity': {'rect': pygame.Rect(20, 120, 200, 20), 'value': 240,
+            'sensitivity': {'rect': pygame.Rect(20, 100, 200, 20), 'value': 240,
                            'min': 0, 'max': 720},
-            'window': {'rect': pygame.Rect(20, 160, 200, 20), 'value': 10,
+            'window': {'rect': pygame.Rect(20, 140, 200, 20), 'value': 10,
                        'min': 1, 'max': 100},
         }
 
@@ -355,9 +353,9 @@ class SpectrometerGUI:
         self.init_cameras()
 
     def detect_cameras(self):
-        """Detect available cameras by testing indices 0-10"""
+        """Detect available cameras by testing indices 0‑10."""
         cameras = []
-        # Try default camera first
+        # Try default camera first (index 0)
         try:
             cap = cv2.VideoCapture(0)
             if cap.isOpened() and cap.read()[0]:
@@ -366,7 +364,7 @@ class SpectrometerGUI:
         except:
             pass
 
-        # Try additional indices
+        # Test additional indices
         for i in range(1, 11):
             try:
                 cap = cv2.VideoCapture(i)
@@ -375,14 +373,12 @@ class SpectrometerGUI:
                 cap.release()
             except:
                 continue
-        return cameras or [0]  # Always include index 0 as fallback
+        return cameras or [0]  # Ensure at least index 0 is present as fallback
 
     def init_cameras(self):
-        """Initialize available cameras"""
-        # Try each detected camera
+        """Initialize the first available camera that can be opened."""
         for cam_idx in self.camera_list:
             try:
-                # Try to open camera
                 self.spec.open_camera(cam_idx)
                 if self.spec.camera.isOpened():
                     self.selected_camera = cam_idx
@@ -394,6 +390,7 @@ class SpectrometerGUI:
         print("No working cameras found, using fallback mode")
 
     def draw_button(self, rect, text, hover=False):
+        """Render a button with optional hover effect."""
         color = self.BUTTON_HOVER if hover else self.BUTTON_COLOR
         pygame.draw.rect(self.screen, color, rect, border_radius=5)
         pygame.draw.rect(self.screen, (40, 90, 140), rect, 2, border_radius=5)
@@ -403,31 +400,37 @@ class SpectrometerGUI:
         self.screen.blit(text_surf, text_rect)
 
     def draw_checkbox(self, rect, checked, label):
+        """Render a checkbox with label."""
         pygame.draw.rect(self.screen, (60, 60, 80), rect, border_radius=3)
         if checked:
-            pygame.draw.rect(self.screen, (100, 200, 100), rect.inflate(-4, -4), border_radius=2)
+            pygame.draw.rect(self.screen, (100, 200, 100),
+                             rect.inflate(-4, -4), border_radius=2)
 
         label_surf = self.small_font.render(label, True, self.TEXT_COLOR)
         self.screen.blit(label_surf, (rect.x + 30, rect.y))
 
     def draw_slider(self, slider):
-        # Draw track
+        """Render a slider track and handle based on current value."""
         pygame.draw.rect(self.screen, (80, 80, 100), slider['rect'])
 
-        # Calculate handle position
+        # Compute handle position proportionally to the value range
         handle_x = slider['rect'].x + int((slider['value'] - slider['min']) /
-                                          (slider['max'] - slider['min']) * slider['rect'].width)
-        handle_rect = pygame.Rect(handle_x - 10, slider['rect'].y - 5, 20, 30)
+                                          (slider['max'] - slider['min']) *
+                                          slider['rect'].width)
+        handle_rect = pygame.Rect(handle_x - 10, slider['rect'].y - 5,
+                                 20, 30)
 
-        # Draw handle
-        pygame.draw.rect(self.screen, (100, 150, 200), handle_rect, border_radius=5)
+        pygame.draw.rect(self.screen, (100, 150, 200), handle_rect,
+                         border_radius=5)
 
-        # Draw label
+        # Display current numeric value above the slider
         value_text = f"{slider['value']}"
         text_surf = self.small_font.render(value_text, True, self.TEXT_COLOR)
-        self.screen.blit(text_surf, (slider['rect'].x, slider['rect'].y - 25))
+        self.screen.blit(text_surf, (slider['rect'].x,
+                                    slider['rect'].y - 25))
 
     def draw_progress_bar(self, duration):
+        """Show progress of HDR capture based on elapsed time."""
         if not self.spec.hdr_mode or not self.spec.capture_start_time:
             return
 
@@ -438,60 +441,68 @@ class SpectrometerGUI:
         pygame.draw.rect(self.screen, (80, 80, 100), bar_rect)
 
         fill_width = int(progress * bar_rect.width)
-        fill_rect = pygame.Rect(bar_rect.x, bar_rect.y, fill_width, bar_rect.height)
+        fill_rect = pygame.Rect(bar_rect.x, bar_rect.y,
+                               fill_width, bar_rect.height)
         pygame.draw.rect(self.screen, (70, 180, 70), fill_rect)
 
         text = f"HDR Capture: {progress * 100:.1f}%"
         text_surf = self.small_font.render(text, True, self.TEXT_COLOR)
-        self.screen.blit(text_surf, (bar_rect.x, bar_rect.y - 25))
+        self.screen.blit(text_surf, (bar_rect.x,
+                                    bar_rect.y - 25))
 
     def update_camera_display(self, frame):
+        """Update the camera view area with latest frame and overlay."""
         if frame is None:
-            # Create blank frame for demo mode
+            # Demo placeholder when no camera
             frame = np.zeros((720, 1280, 3), dtype=np.uint8)
             cv2.putText(frame, "No Camera", (50, 360),
-                        cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 255, 255), 3)
+                        cv2.FONT_HERSHEY_SIMPLEX, 2,
+                        (255, 255, 255), 3)
 
-        # Resize frame to fit display area
+        # Resize frame to fit the display rectangle
         display_rect = pygame.Rect(450, 100, 700, 400)
-        frame = cv2.resize(frame, (display_rect.width, display_rect.height))
+        frame = cv2.resize(frame, (display_rect.width,
+                                 display_rect.height))
 
-        # Convert to RGB and create surface
+        # Convert BGR to RGB for Pygame surface creation
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        self.camera_surface = pygame.surfarray.make_surface(rgb_frame.transpose([1, 0, 2]))
+        self.camera_surface = pygame.surfarray.make_surface(
+            rgb_frame.transpose([1, 0, 2]))
 
-        # Draw sensitivity line
+        # Compute position of sensitivity line relative to ROI height
         roi_height = self.spec.settings['roi'][3] or 720
-        line_pos = int(self.sliders['sensitivity']['value'] * display_rect.height / roi_height)
+        line_pos = int(self.sliders['sensitivity']['value'] *
+                       display_rect.height / roi_height)
         line_pos = max(0, min(display_rect.height, line_pos))
 
         window_height = int(self.sliders['window']['value'])
 
-        # Draw ROI rectangle
-        pygame.draw.rect(self.screen, (0, 255, 0), display_rect, 2)
+        # Draw ROI rectangle border
+        pygame.draw.rect(self.screen, (0, 255, 0),
+                         display_rect, 2)
 
-        # Draw sensitivity line
+        # Draw the sensitivity line on the camera surface
         pygame.draw.line(
             self.camera_surface,
             (255, 0, 0),
-            (0, line_pos),
-            (display_rect.width, line_pos),
-            2
-        )
+            (0, line_pos), (display_rect.width, line_pos),
+            2)
 
-        # Draw window area
+        # Highlight the averaging window around the line
         start_y = max(0, line_pos - window_height // 2)
         end_y = min(frame.shape[0], line_pos + window_height // 2)
         pygame.draw.rect(
             self.camera_surface,
             (0, 150, 255),
-            (0, int(start_y), display_rect.width, int(end_y - start_y)),
-            1
-        )
+            (0, int(start_y), display_rect.width,
+             int(end_y - start_y)),
+            1)
 
+        # Blit the camera surface onto screen
         self.screen.blit(self.camera_surface, display_rect.topleft)
 
     def update_spectrum_plot(self, wavelengths, spectrum):
+        """Render the spectral intensity plot using Matplotlib."""
         fig = plt.figure(figsize=(6, 3), dpi=80)
         ax = fig.add_subplot(111)
 
@@ -501,38 +512,42 @@ class SpectrometerGUI:
         ax.set_ylabel('Intensity')
         ax.grid(True, color='0.9')
 
-        # Highlight calibration points
+        # Highlight calibration points on the plot
         if self.spec.calibration_points:
             pixels, wavelengths = zip(*self.spec.calibration_points)
-            ax.plot(wavelengths, np.interp(wavelengths, self.spec.wavelengths, spectrum),
+            # Interpolate to match the spectrum axis for visual markers
+            ax.plot(wavelengths,
+                    np.interp(wavelengths,
+                              self.spec.wavelengths,
+                              spectrum),
                     'ro', markersize=6)
 
         canvas = agg.FigureCanvasAgg(fig)
         canvas.draw()
         renderer = canvas.get_renderer()
 
-        # Correct rendering for matplotlib versions
+        # Compatibility handling for different Matplotlib versions
         try:
-            # Older matplotlib versions
-            raw_data = renderer.tostring_rgb()
+            raw_data = renderer.tostring_rgb()   # Older versions
             size = (int(renderer.width), int(renderer.height))
         except AttributeError:
-            # Newer versions
-            raw_data = canvas.buffer_rgba()
+            raw_data = canvas.buffer_rgba()     # Newer versions
             width = int(renderer.width)
             height = int(renderer.height)
             size = (width, height)
-            # Convert RGBA to RGB using PIL
             img = Image.frombytes('RGBA', size, raw_data)
             img = img.convert('RGB')
             raw_data = img.tobytes()
 
-        self.spectrum_surface = pygame.image.fromstring(raw_data, size, "RGB")
+        self.spectrum_surface = pygame.image.fromstring(
+            raw_data, size, "RGB")
         plt.close(fig)
 
+        # Blit the spectrum surface onto the designated area
         self.screen.blit(self.spectrum_surface, (450, 520))
 
     def update_reflectance_plot(self, wavelengths, reflectance):
+        """Render the reflectance plot similarly to the spectrum."""
         fig = plt.figure(figsize=(6, 3), dpi=80)
         ax = fig.add_subplot(111)
 
@@ -540,40 +555,40 @@ class SpectrometerGUI:
         ax.set_title('Reflectance')
         ax.set_xlabel('Wavelength (nm)')
         ax.set_ylabel('Reflectance')
-        ax.set_ylim(0, 1.2)
+        ax.set_ylim(0, 1.2)   # Allow slight overflow for visualization
         ax.grid(True, color='0.9')
 
         canvas = agg.FigureCanvasAgg(fig)
         canvas.draw()
         renderer = canvas.get_renderer()
 
-        # Correct rendering for matplotlib versions
         try:
-            # Older matplotlib versions
             raw_data = renderer.tostring_rgb()
             size = (int(renderer.width), int(renderer.height))
         except AttributeError:
-            # Newer versions
             raw_data = canvas.buffer_rgba()
             width = int(renderer.width)
             height = int(renderer.height)
             size = (width, height)
-            # Convert RGBA to RGB using PIL
             img = Image.frombytes('RGBA', size, raw_data)
             img = img.convert('RGB')
             raw_data = img.tobytes()
 
-        self.reflectance_surface = pygame.image.fromstring(raw_data, size, "RGB")
+        self.reflectance_surface = pygame.image.fromstring(
+            raw_data, size, "RGB")
         plt.close(fig)
 
+        # Blit the reflectance surface onto its area
         self.screen.blit(self.reflectance_surface, (850, 520))
 
     def save_data(self):
+        """Export current spectral data to a CSV file with timestamp."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"spectrum_{timestamp}.csv"
 
         if self.spec.wavelengths is not None and self.spec.processed is not None:
-            data = np.column_stack((self.spec.wavelengths, self.spec.processed))
+            data = np.column_stack((self.spec.wavelengths,
+                                    self.spec.processed))
             if self.spec.reflectance is not None:
                 data = np.column_stack((data, self.spec.reflectance))
 
@@ -586,6 +601,7 @@ class SpectrometerGUI:
         return None
 
     def run(self):
+        """Main event loop handling UI interaction and live processing."""
         clock = pygame.time.Clock()
         mouse_down = False
 
@@ -597,7 +613,7 @@ class SpectrometerGUI:
 
                 if event.type == pygame.MOUSEBUTTONDOWN:
                     mouse_down = True
-                    # Check buttons
+                    # Check button clicks
                     for name, rect in self.buttons.items():
                         if rect.collidepoint(event.pos):
                             if name == 'play':
@@ -623,12 +639,13 @@ class SpectrometerGUI:
                             elif name == 'select_cam':
                                 if self.camera_list:
                                     # Cycle through available cameras
-                                    current_idx = self.camera_list.index(self.selected_camera)
+                                    current_idx = self.camera_list.index(
+                                        self.selected_camera)
                                     next_idx = (current_idx + 1) % len(self.camera_list)
                                     self.selected_camera = self.camera_list[next_idx]
                                     self.spec.open_camera(self.selected_camera)
 
-                    # Check checkboxes
+                    # Check checkbox clicks
                     for name, rect in self.checkboxes.items():
                         if rect.collidepoint(event.pos):
                             if name == 'hdr':
@@ -636,45 +653,54 @@ class SpectrometerGUI:
                             elif name == 'calibration_mode':
                                 self.spec.calibration_mode = not self.spec.calibration_mode
 
-                    # Check sliders
+                    # Check slider interaction
                     for name, slider in self.sliders.items():
                         if slider['rect'].collidepoint(event.pos):
-                            # Update slider value
                             rel_x = event.pos[0] - slider['rect'].x
                             fraction = rel_x / slider['rect'].width
-                            value = slider['min'] + fraction * (slider['max'] - slider['min'])
-                            self.sliders[name]['value'] = max(slider['min'], min(slider['max'], int(value)))
+                            value = slider['min'] + fraction * (slider['max'] -
+                                                             slider['min'])
+                            self.sliders[name]['value'] = max(
+                                slider['min'],
+                                min(slider['max'], int(value)))
 
-                            # Update spectrometer setting
+                            # Update spectrometer settings accordingly
                             if name == 'sensitivity':
-                                self.spec.settings['sensitivity_line'] = int(value)
+                                self.spec.settings['sensitivity_line'] = \
+                                    int(value)
                             elif name == 'window':
-                                self.spec.settings['window_height'] = int(value)
+                                self.spec.settings['window_height'] = \
+                                    int(value)
                             self.spec.save_config()
 
                 if event.type == pygame.MOUSEBUTTONUP:
                     mouse_down = False
 
-                    # Add calibration point
-                    if self.spec.calibration_mode and event.button == 3:  # Right click
+                    # Right‑click adds calibration point when in calibration mode
+                    if self.spec.calibration_mode and event.button == 3:
                         if self.spectrum_surface and self.spec.wavelengths is not None:
-                            plot_rect = pygame.Rect(450, 520, 350, 250)
+                            plot_rect = pygame.Rect(450, 520,
+                                                    350, 250)
                             if plot_rect.collidepoint(event.pos):
                                 rel_x = event.pos[0] - plot_rect.x
                                 fraction = rel_x / plot_rect.width
                                 pixel = int(fraction * len(self.spec.wavelengths))
                                 wavelength = self.spec.wavelengths[pixel]
-                                self.spec.add_calibration_point(pixel, wavelength)
-                                print(f"Added calibration: pixel={pixel}, wavelength={wavelength:.1f}nm")
+                                self.spec.add_calibration_point(
+                                    pixel, wavelength)
+                                print(f"Added calibration: pixel={pixel}, "
+                                      f"wavelength={wavelength:.1f}nm")
 
-            # Update display
+            # Fill background
             self.screen.fill(self.BG_COLOR)
 
-            # Draw UI panels
-            pygame.draw.rect(self.screen, self.PANEL_COLOR, (10, 10, 430, 780))
-            pygame.draw.rect(self.screen, self.PANEL_COLOR, (440, 90, 740, 660))
+            # Draw UI panels (left and right sections)
+            pygame.draw.rect(self.screen, self.PANEL_COLOR,
+                             (10, 10, 430, 780))
+            pygame.draw.rect(self.screen, self.PANEL_COLOR,
+                             (440, 90, 740, 660))
 
-            # Draw buttons
+            # Render buttons with hover effect
             mouse_pos = pygame.mouse.get_pos()
             for name, rect in self.buttons.items():
                 hover = rect.collidepoint(mouse_pos)
@@ -685,30 +711,34 @@ class SpectrometerGUI:
                     text = f"Cam: {self.selected_camera}"
                 self.draw_button(rect, text, hover)
 
-            # Draw checkboxes
+            # Render checkboxes
             for name, rect in self.checkboxes.items():
-                checked = getattr(self.spec, name) if hasattr(self.spec, name) else False
+                checked = getattr(self.spec,
+                                 name) if hasattr(self.spec, name) else False
                 label = name.capitalize().replace('_', ' ')
                 self.draw_checkbox(rect, checked, label)
 
-            # Draw sliders
+            # Render sliders with labels
             for name, slider in self.sliders.items():
                 label = name.capitalize()
-                label_surf = self.small_font.render(label, True, self.TEXT_COLOR)
-                self.screen.blit(label_surf, (slider['rect'].x, slider['rect'].y - 25))
+                label_surf = self.small_font.render(label,
+                                                   True, self.TEXT_COLOR)
+                self.screen.blit(label_surf,
+                                 (slider['rect'].x, slider['rect'].y - 25))
                 self.draw_slider(slider)
 
-            # Draw camera list info
+            # Display camera list and selected camera info
             cam_text = f"Available cameras: {self.camera_list}"
-            cam_surf = self.small_font.render(cam_text, True, self.TEXT_COLOR)
+            cam_surf = self.small_font.render(cam_text,
+                                              True, self.TEXT_COLOR)
             self.screen.blit(cam_surf, (20, 160))
 
-            # Current camera info
             cam_text = f"Selected camera: {self.selected_camera}"
-            cam_surf = self.small_font.render(cam_text, True, self.TEXT_COLOR)
+            cam_surf = self.small_font.render(cam_text,
+                                              True, self.TEXT_COLOR)
             self.screen.blit(cam_surf, (20, 180))
 
-            # Capture and process frame
+            # Capture and process frames when running
             if self.spec.running:
                 if self.spec.hdr_mode:
                     total_duration = sum(self.spec.settings['hdr_exposures']) / 1000.0
@@ -720,31 +750,35 @@ class SpectrometerGUI:
                             profile = self.spec.capture_hdr()
                             self.spec.capture_start_time = None
 
-                            # Process and calculate reflectance
-                            wavelengths, processed = self.spec.process_profile(profile)
+                            # Process HDR profile and calculate reflectance
+                            wavelengths, processed = \
+                                self.spec.process_profile(profile)
                             if self.spec.settings['reference'] is not None:
                                 self.spec.calculate_reflectance(profile)
+
                 else:
                     frame = self.spec.capture_frame()
                     profile = self.spec.extract_profile(
                         frame,
                         self.sliders['sensitivity']['value'],
-                        self.sliders['window']['value']
-                    )
+                        self.sliders['window']['value'])
 
-                    # Process and calculate reflectance
-                    wavelengths, processed = self.spec.process_profile(profile)
+                    # Process the profile and compute reflectance if reference exists
+                    wavelengths, processed = \
+                        self.spec.process_profile(profile)
                     if self.spec.settings['reference'] is not None:
                         self.spec.calculate_reflectance(profile)
 
-                    # Update displays
+                    # Update visual displays
                     self.update_camera_display(frame)
                     if wavelengths is not None and processed is not None:
                         self.update_spectrum_plot(wavelengths, processed)
                     if self.spec.reflectance is not None:
-                        self.update_reflectance_plot(wavelengths, self.spec.reflectance)
+                        self.update_reflectance_plot(
+                            wavelengths,
+                            self.spec.reflectance)
 
-            # Update display
+            # Final screen update
             pygame.display.flip()
             clock.tick(30)
 
