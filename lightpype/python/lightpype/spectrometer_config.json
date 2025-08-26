@@ -1,0 +1,23 @@
+{
+    "exposure": -1,
+    "gain": 0,
+    "roi": [
+        0,
+        0,
+        1280,
+        720
+    ],
+    "calibration": {
+        "wavelength": [],
+        "pixel": []
+    },
+    "hdr_exposures": [
+        10,
+        30,
+        60,
+        100
+    ],
+    "sensitivity_line": 240,
+    "window_height": 10,
+    "clipping_threshold": 240,
+    "dark_frame": 
