@@ -1,0 +1,17 @@
+{
+    "leds": {
+        "red": 12,
+        "green": 20,
+        "blue": 21,
+        "white": 16
+    },
+
+    "motor_pins": {
+        "in1": 5,
+        "in2": 6,
+        "in3": 13,
+        "in4": 19
+    },
+    "steps_per_revolution": 400,
+    "delay": 0.005
+}

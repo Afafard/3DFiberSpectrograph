@@ -1,15 +1,17 @@
 {
-    "exposure": -1,
+    "camera_index": 0,
+    "exposure": 100,
     "gain": 0,
-    "roi": [
-        0,
-        0,
-        1280,
-        720
-    ],
+    "brightness": 50,
+    "contrast": 50,
+    "saturation": 50,
+    "sample_height": 360,
+    "window_height": 10,
+    "smoothing": 10,
+    "clipping_limit": 240,
     "calibration": {
-        "wavelength": [],
-        "pixel": []
+        "pixels": [],
+        "wavelengths": []
     },
     "hdr_exposures": [
         10,
@@ -17,7 +19,6 @@
         60,
         100
     ],
-    "sensitivity_line": 240,
-    "window_height": 10,
-    "clipping_threshold": 240,
-    "dark_frame": 
+    "dark_frame_path": "dark_frame.npy",
+    "reference_path": "reference_spectrum.npy"
+}
