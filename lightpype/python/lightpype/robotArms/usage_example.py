@@ -1,5 +1,5 @@
 # example_usage.py
-# !/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Example usage of the RoArm-M3 scanning system
 """

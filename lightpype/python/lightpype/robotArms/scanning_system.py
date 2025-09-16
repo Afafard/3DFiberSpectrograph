@@ -1,7 +1,7 @@
 # scanning_system.py
 # !/usr/bin/env python3
 """
-Complete 3D scanning system for dual RoArm-M3 robotic arms
+Complete 3D scanning system for dual RoArm-M3 robotic arms with proper geometry
 """
 
 import sys
@@ -17,7 +17,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from arm import DualArmController, ScanningPlanner, ArmState
 from viz import ArmVisualizer
-from ..gpio.turntable_control import StepperMotorManager
+from turntable_control import StepperMotorManager
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -29,19 +29,24 @@ class ScanningSystem:
 
     def __init__(self, left_port: str = '/dev/ttyUSB0', right_port: str = '/dev/ttyUSB1'):
         """
-        Initialize the scanning system
+        Initialize the scanning system with proper geometry
 
         Args:
-            left_port: Serial port for left arm
-            right_port: Serial port for right arm
+            left_port: Serial port for left arm (spectrometer)
+            right_port: Serial port for right arm (illuminator)
         """
         self.controller = DualArmController(left_port, right_port)
         self.motor_manager = StepperMotorManager()
         self.visualizer = None
-        self.sample_center = (0, 0, -200)  # Default sample center
+        self.sample_center = (0, 0, 0)  # Sample is our origin
+        self.arm_bases = {
+            'left': (-400, 0, 200),  # Left arm base (spectrometer) in mm
+            'right': (400, 0, 200)  # Right arm base (illuminator) in mm
+        }
         self.planner = None
         self.is_calibrated = False
         self.scan_data = []
+        self.arm_workspace_radius = 500  # mm
 
     def initialize_system(self) -> bool:
         """
@@ -57,10 +62,10 @@ class ScanningSystem:
                 return False
 
             # Initialize planner
-            self.planner = ScanningPlanner(self.controller, self.sample_center)
+            self.planner = ScanningPlanner(self.controller, self.sample_center, self.arm_bases)
 
             # Initialize visualizer
-            self.visualizer = ArmVisualizer(self.sample_center)
+            self.visualizer = ArmVisualizer(self.sample_center, self.arm_bases)
 
             logger.info("System initialized successfully")
             return True
@@ -71,21 +76,24 @@ class ScanningSystem:
 
     def calibrate_system(self, calibration_points: List[Tuple[float, float, float]] = None):
         """
-        Calibrate the entire system
+        Calibrate the entire system with proper geometry
 
         Args:
             calibration_points: List of calibration points, if None uses default
         """
         if calibration_points is None:
-            # Default calibration points around sample center
+            # Default calibration points around sample center (hemispherical pattern)
             calibration_points = [
-                (0, 0, -150),  # Above sample
-                (50, 0, -200),  # Right of sample
-                (-50, 0, -200),  # Left of sample
-                (0, 50, -200),  # Front of sample
-                (0, -50, -200),  # Back of sample
-                (30, 30, -180),  # Diagonal
-                (-30, -30, -220),  # Opposite diagonal
+                (0, 0, 100),  # Above sample
+                (100, 0, 0),  # Right of sample
+                (-100, 0, 0),  # Left of sample
+                (0, 100, 0),  # Front of sample
+                (0, -100, 0),  # Back of sample
+                (70, 70, 50),  # Diagonal front-right
+                (-70, 70, 50),  # Diagonal front-left
+                (70, -70, 50),  # Diagonal back-right
+                (-70, -70, 50),  # Diagonal back-left
+                (0, 0, 200),  # High above sample
             ]
 
         try:
@@ -130,9 +138,9 @@ class ScanningSystem:
     def setup_sample(self):
         """Setup the sample for scanning"""
         try:
-            # Move arms to safe positions
-            self.controller.move_left_to_world(200, -100, -150)
-            self.controller.move_right_to_world(200, 100, -150)
+            # Move arms to safe positions away from sample
+            self.controller.move_left_to_world(300, -200, 100)  # Left arm safe position
+            self.controller.move_right_to_world(300, 200, 100)  # Right arm safe position
 
             # Open grippers for sample mounting
             self.controller.release_with_left()
@@ -150,18 +158,21 @@ class ScanningSystem:
         try:
             logger.info("Grasping instruments...")
 
-            # Move to instrument positions (these would be calibrated positions)
-            # For now, using approximate positions
-            self.controller.move_left_to_world(150, -150, -180)  # Illuminator position
-            self.controller.move_right_to_world(150, 150, -180)  # Spectrometer position
+            # Move to instrument pickup positions
+            self.controller.move_left_to_world(200, -300, 50)  # Spectrometer pickup
+            self.controller.move_right_to_world(200, 300, 50)  # Illuminator pickup
 
             time.sleep(2)  # Wait for positioning
 
             # Grasp instruments
-            self.controller.grasp_with_left()  # Illuminator
-            self.controller.grasp_with_right()  # Spectrometer
+            self.controller.grasp_with_left()  # Spectrometer
+            self.controller.grasp_with_right()  # Illuminator
 
             time.sleep(1)  # Allow grippers to close
+
+            # Move to safe positions above sample
+            self.controller.move_left_to_world(200, -100, 150)
+            self.controller.move_right_to_world(200, 100, 150)
 
             logger.info("Instruments grasped successfully")
 
@@ -174,15 +185,21 @@ class ScanningSystem:
         try:
             logger.info("Releasing instruments...")
 
+            # Move to release positions
+            self.controller.move_left_to_world(200, -300, 50)  # Spectrometer release
+            self.controller.move_right_to_world(200, 300, 50)  # Illuminator release
+
+            time.sleep(1)  # Wait for positioning
+
             # Open grippers
-            self.controller.release_with_left()  # Illuminator
-            self.controller.release_with_right()  # Spectrometer
+            self.controller.release_with_left()  # Spectrometer
+            self.controller.release_with_right()  # Illuminator
 
             time.sleep(1)  # Allow grippers to open
 
             # Move arms to safe positions
-            self.controller.move_left_to_world(200, -100, -150)
-            self.controller.move_right_to_world(200, 100, -150)
+            self.controller.move_left_to_world(300, -200, 100)
+            self.controller.move_right_to_world(300, 200, 100)
 
             logger.info("Instruments released successfully")
 
@@ -191,19 +208,19 @@ class ScanningSystem:
             raise
 
     def plan_scan(self,
-                  r_range: Tuple[float, float] = (100, 200),
-                  theta_range: Tuple[float, float] = (0, np.pi / 2),
+                  r_range: Tuple[float, float] = (50, 300),
+                  theta_range: Tuple[float, float] = (0, np.pi / 2),  # Hemisphere
                   phi_range: Tuple[float, float] = (0, 2 * np.pi),
-                  r_steps: int = 5,
-                  theta_steps: int = 8,
-                  phi_steps: int = 16) -> List[Tuple[Tuple[float, float, float], Tuple[float, float, float]]]:
+                  r_steps: int = 8,
+                  theta_steps: int = 6,
+                  phi_steps: int = 12) -> List[Tuple[Tuple[float, float, float], Tuple[float, float, float]]]:
         """
-        Plan a scanning sequence
+        Plan a scanning sequence with proper hemispherical coverage
 
         Args:
-            r_range: Radial distance range
-            theta_range: Polar angle range
-            phi_range: Azimuthal angle range
+            r_range: Radial distance range in mm
+            theta_range: Polar angle range (0 to pi/2 for hemisphere)
+            phi_range: Azimuthal angle range (0 to 2pi for full circle)
             r_steps, theta_steps, phi_steps: Sampling resolution
 
         Returns:
@@ -214,15 +231,40 @@ class ScanningSystem:
 
         return self.planner.plan_hemispherical_scan(
             r_min=r_range[0], r_max=r_range[1],
+            theta_min=theta_range[0], theta_max=theta_range[1],
+            phi_min=phi_range[0], phi_max=phi_range[1],
             r_steps=r_steps,
             theta_steps=theta_steps,
             phi_steps=phi_steps
         )
 
-    def execute_scan(self, position_pairs: List[Tuple[Tuple[float, float, float], Tuple[float, float, float]]],
-                     use_turntable: bool = True, turntable_steps: int = 8):
+    def visualize_plan(self, position_pairs: List[Tuple[Tuple[float, float, float], Tuple[float, float, float]]]):
         """
-        Execute a complete scanning sequence
+        Visualize the planned scanning path in real-time
+
+        Args:
+            position_pairs: List of position pairs to visualize
+        """
+        if not self.visualizer:
+            logger.warning("No visualizer available")
+            return
+
+        logger.info(f"Visualizing {len(position_pairs)} planned positions...")
+
+        # Plot the scanning path
+        left_positions = [pair[0] for pair in position_pairs]
+        right_positions = [pair[1] for pair in position_pairs]
+
+        self.visualizer.plot_scanning_path(left_positions, 'left')
+        self.visualizer.plot_scanning_path(right_positions, 'right')
+
+        # Show the visualization
+        self.visualizer.show()
+
+    def execute_scan(self, position_pairs: List[Tuple[Tuple[float, float, float], Tuple[float, float, float]]],
+                     use_turntable: bool = True, turntable_steps: int = 12):
+        """
+        Execute a complete scanning sequence with real-time visualization
 
         Args:
             position_pairs: List of position pairs for arms
@@ -235,27 +277,39 @@ class ScanningSystem:
         try:
             logger.info(f"Starting scan with {len(position_pairs)} position pairs")
 
+            # Update visualization with planned path
+            if self.visualizer:
+                self.visualizer.clear_paths()
+                left_positions = [pair[0] for pair in position_pairs]
+                right_positions = [pair[1] for pair in position_pairs]
+                self.visualizer.plot_scanning_path(left_positions, 'left')
+                self.visualizer.plot_scanning_path(right_positions, 'right')
+
             # If using turntable, divide positions among turntable steps
             if use_turntable:
-                positions_per_step = len(position_pairs) // turntable_steps
-                if positions_per_step == 0:
-                    positions_per_step = 1
-                    turntable_steps = len(position_pairs)
+                positions_per_step = max(1, len(position_pairs) // turntable_steps)
+                actual_turntable_steps = min(turntable_steps, len(position_pairs))
 
-                for step in range(turntable_steps):
+                for step in range(actual_turntable_steps):
                     # Rotate turntable
-                    angle = (360.0 / turntable_steps) * step
-                    logger.info(f"Rotating turntable to {angle} degrees")
-                    self.motor_manager.set_motor_state("moving", "move_to", angle)
-                    time.sleep(2)  # Wait for rotation
+                    angle = (360.0 / actual_turntable_steps) * step
+                    logger.info(f"Rotating turntable to {angle:.1f} degrees")
+
+                    if hasattr(self.motor_manager, 'set_motor_state'):
+                        self.motor_manager.set_motor_state("moving", "move_to", angle)
+                        time.sleep(2)  # Wait for rotation
 
                     # Execute positions for this turntable step
                     start_idx = step * positions_per_step
                     end_idx = min((step + 1) * positions_per_step, len(position_pairs))
 
+                    if start_idx >= len(position_pairs):
+                        break
+
                     for i in range(start_idx, end_idx):
                         arm1_pos, arm2_pos = position_pairs[i]
-                        logger.info(f"Executing position pair {i + 1}/{len(position_pairs)} at turntable angle {angle}")
+                        logger.info(
+                            f"Executing position pair {i + 1}/{len(position_pairs)} at turntable angle {angle:.1f}°")
 
                         # Move arms to positions
                         success = self.controller.move_both_to_world(arm1_pos, arm2_pos)
@@ -268,6 +322,7 @@ class ScanningSystem:
                             # Update visualization if available
                             if self.visualizer:
                                 self.visualizer.update_arm_positions(arm1_pos, arm2_pos)
+                                self.visualizer.highlight_current_position(arm1_pos, arm2_pos)
                         else:
                             logger.warning("  Movement failed")
 
@@ -283,12 +338,13 @@ class ScanningSystem:
             logger.error(f"Error during scan execution: {e}")
             raise
 
-    def run_complete_scan(self, save_calibration: bool = True):
+    def run_complete_scan(self, save_calibration: bool = True, visualize: bool = True):
         """
         Run a complete scanning workflow
 
         Args:
             save_calibration: Whether to save calibration after completion
+            visualize: Whether to show real-time visualization
         """
         try:
             # Initialize system
@@ -311,20 +367,24 @@ class ScanningSystem:
             # Grasp instruments
             self.grasp_instruments()
 
-            # Plan scan
+            # Plan scan - hemispherical coverage
             position_pairs = self.plan_scan(
-                r_range=(80, 180),
-                theta_range=(0, np.pi / 2),
-                phi_range=(0, 2 * np.pi),
-                r_steps=4,
-                theta_steps=6,
-                phi_steps=12
+                r_range=(80, 250),  # Safe range within arm reach
+                theta_range=(0, np.pi / 2),  # Hemisphere
+                phi_range=(0, 2 * np.pi),  # Full azimuthal coverage
+                r_steps=6,
+                theta_steps=5,
+                phi_steps=10
             )
 
             logger.info(f"Planned {len(position_pairs)} scanning positions")
 
+            # Visualize plan if requested
+            if visualize:
+                self.visualize_plan(position_pairs)
+
             # Execute scan
-            self.execute_scan(position_pairs, use_turntable=True, turntable_steps=8)
+            self.execute_scan(position_pairs, use_turntable=True, turntable_steps=12)
 
             # Release instruments
             self.release_instruments()
@@ -359,8 +419,8 @@ def test_basic_movement():
             logger.info("Testing basic movements...")
 
             # Move to some test positions
-            system.controller.move_left_to_world(200, -50, -200)
-            system.controller.move_right_to_world(200, 50, -200)
+            system.controller.move_left_to_world(300, -100, 100)
+            system.controller.move_right_to_world(300, 100, 100)
 
             time.sleep(2)
 
@@ -406,7 +466,7 @@ def test_full_scan():
     system = ScanningSystem()
 
     try:
-        system.run_complete_scan(save_calibration=True)
+        system.run_complete_scan(save_calibration=True, visualize=True)
         logger.info("Full scan test completed")
 
     except Exception as e:

@@ -65,31 +65,39 @@ class StepperMotorManager:
         self.tasks: Dict[str, MotorTask] = {}
         self.task_lock = threading.Lock()
         self._state_stack: Dict[str, MotorTask] = {}
+        self.initialized = False
 
-        # Initialize GPIO
-        GPIO.setmode(GPIO.BCM)
+        try:
+            # Initialize GPIO
+            GPIO.setmode(GPIO.BCM)
+            GPIO.setwarnings(False)
 
-        # Load configuration
-        self._load_config()
+            # Load configuration
+            self._load_config()
 
-        # Setup GPIO pins
-        self._setup_gpio()
+            # Setup GPIO pins
+            self._setup_gpio()
+            self.initialized = True
 
-        # 4-step bipolar full-step sequence
-        self.step_seq = [
-            [1, 0, 1, 0],
-            [0, 1, 1, 0],
-            [0, 1, 0, 1],
-            [1, 0, 0, 1]
-        ]
+            # 4-step bipolar full-step sequence
+            self.step_seq = [
+                [1, 0, 1, 0],
+                [0, 1, 1, 0],
+                [0, 1, 0, 1],
+                [1, 0, 0, 1]
+            ]
 
-        # Motor control pins
-        self.in1 = self.motor_pins.get('in1', 5)
-        self.in2 = self.motor_pins.get('in2', 6)
-        self.in3 = self.motor_pins.get('in3', 13)
-        self.in4 = self.motor_pins.get('in4', 19)
+            # Motor control pins
+            self.in1 = self.motor_pins.get('in1', 5)
+            self.in2 = self.motor_pins.get('in2', 6)
+            self.in3 = self.motor_pins.get('in3', 13)
+            self.in4 = self.motor_pins.get('in4', 19)
 
-        logger.info("Stepper motor manager initialized")
+            logger.info("Stepper motor manager initialized")
+
+        except Exception as e:
+            logger.error(f"Error initializing stepper motor manager: {e}")
+            self.initialized = False
 
     def _load_config(self):
         """Load GPIO configuration from JSON file"""
@@ -116,8 +124,14 @@ class StepperMotorManager:
             logger.info(f"Loaded motor configuration from {self.config_file}")
 
         except FileNotFoundError:
-            logger.error(f"Configuration file {self.config_file} not found")
-            raise
+            logger.warning(f"Configuration file {self.config_file} not found, using defaults")
+            # Set default pin configuration
+            self.motor_pins = {
+                'in1': 5,
+                'in2': 6,
+                'in3': 13,
+                'in4': 19
+            }
         except json.JSONDecodeError:
             logger.error(f"Invalid JSON in {self.config_file}")
             raise
@@ -130,19 +144,30 @@ class StepperMotorManager:
         # Setup motor pins
         all_pins = list(self.motor_pins.values()) + self.enable_pins
         for pin in all_pins:
-            GPIO.setup(pin, GPIO.OUT)
-            GPIO.output(pin, GPIO.LOW)
+            try:
+                GPIO.setup(pin, GPIO.OUT)
+                GPIO.output(pin, GPIO.LOW)
+            except Exception as e:
+                logger.error(f"Error setting up GPIO pin {pin}: {e}")
+                raise
 
         # Set all enable pins high (if wired)
         for en in self.enable_pins:
-            GPIO.output(en, GPIO.HIGH)
+            try:
+                GPIO.output(en, GPIO.HIGH)
+            except Exception as e:
+                logger.error(f"Error setting enable pin {en}: {e}")
 
     def set_step(self, a1: int, a2: int, b1: int, b2: int):
         """Set the motor step"""
-        GPIO.output(self.in1, a1)
-        GPIO.output(self.in2, a2)
-        GPIO.output(self.in3, b1)
-        GPIO.output(self.in4, b2)
+        try:
+            GPIO.output(self.in1, a1)
+            GPIO.output(self.in2, a2)
+            GPIO.output(self.in3, b1)
+            GPIO.output(self.in4, b2)
+        except Exception as e:
+            logger.error(f"Error setting motor step: {e}")
+            raise
 
     async def _step_motor(self, steps: int):
         """Execute a specific number of motor steps asynchronously"""
@@ -201,8 +226,18 @@ class StepperMotorManager:
 
     def cleanup(self):
         """Clean up GPIO resources"""
-        GPIO.cleanup()
-        logger.info("Motor GPIO cleaned up")
+        try:
+            if self.initialized:
+                # Turn off all motor pins
+                for pin in [self.in1, self.in2, self.in3, self.in4]:
+                    GPIO.output(pin, GPIO.LOW)
+                for en in self.enable_pins:
+                    GPIO.output(en, GPIO.LOW)
+                GPIO.cleanup()
+                self.initialized = False
+                logger.info("Motor GPIO cleaned up")
+        except Exception as e:
+            logger.error(f"Error during motor cleanup: {e}")
 
     # Task management methods
 
@@ -228,35 +263,43 @@ class StepperMotorManager:
         Set motor state with optional parameters
         Returns True if task was successfully queued
         """
-        # Convert pattern to state if needed
-        if isinstance(state, MotorPattern):
-            state = self._pattern_to_state(state)
+        if not self.initialized:
+            logger.error("Motor manager not initialized")
+            return False
 
-        with self.task_lock:
-            # Cancel existing task if present
-            if 'motor_task' in self.active_tasks:
-                self.active_tasks['motor_task'].cancel()
-                del self.active_tasks['motor_task']
+        try:
+            # Convert pattern to state if needed
+            if isinstance(state, MotorPattern):
+                state = self._pattern_to_state(state)
 
-            # Create new task
-            task = MotorTask(
-                name="motor_task",
-                state=state,
-                action=action,
-                target=target,
-                duration=duration,
-                priority=priority,
-                callback=callback
-            )
+            with self.task_lock:
+                # Cancel existing task if present
+                if 'motor_task' in self.active_tasks:
+                    self.active_tasks['motor_task'].cancel()
+                    del self.active_tasks['motor_task']
 
-            self.tasks['motor_task'] = task
+                # Create new task
+                task = MotorTask(
+                    name="motor_task",
+                    state=state,
+                    action=action,
+                    target=target,
+                    duration=duration,
+                    priority=priority,
+                    callback=callback
+                )
 
-            # Create and schedule the async task
-            task_coro = self._motor_task(task)
-            self.active_tasks['motor_task'] = asyncio.create_task(task_coro)
+                self.tasks['motor_task'] = task
 
-            logger.info(f"Set motor to {state.value} state with action {action}")
-            return True
+                # Create and schedule the async task
+                task_coro = self._motor_task(task)
+                self.active_tasks['motor_task'] = asyncio.create_task(task_coro)
+
+                logger.info(f"Set motor to {state.value} state with action {action}")
+                return True
+        except Exception as e:
+            logger.error(f"Error setting motor state: {e}")
+            return False
 
     def _pattern_to_state(self, pattern: MotorPattern) -> MotorState:
         """Convert pattern to corresponding state"""
@@ -308,6 +351,12 @@ class StepperMotorManager:
             # Task was cancelled
             logger.info("Motor task cancelled")
             raise
+        except Exception as e:
+            logger.error(f"Error in motor task: {e}")
+            # Set error state
+            with self.task_lock:
+                if 'motor_task' in self.tasks:
+                    self.tasks['motor_task'].state = MotorState.ERROR
 
     def cancel_motor_task(self) -> bool:
         """Cancel the current motor task"""
