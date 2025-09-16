@@ -1,400 +1,450 @@
-#!/usr/bin/env python3
+# viz.py
+# !/usr/bin/env python3
 """
-3D scanning path planner for dual RoArm-M3 system with proper spherical coordinates
+3D visualization for RoArm-M3 scanning system using PyQt5/PyQtGraph
 """
 
 import sys
-import os
-
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
-from arm import DualArmController
 import numpy as np
 from typing import List, Tuple
-import math
+import logging
+
+# Try to import PyQt5 and pyqtgraph
+try:
+    from PyQt5 import QtWidgets, QtCore
+    import pyqtgraph as pg
+    import pyqtgraph.opengl as gl
+
+    PYQT_AVAILABLE = True
+except ImportError:
+    PYQT_AVAILABLE = False
+    print("Warning: PyQt5 or pyqtgraph not available. Using matplotlib fallback.")
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d import Axes3D
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
-class ScanningPlanner:
-    """Path planner for 3D scanning with dual robotic arms using spherical coordinates"""
+class ArmVisualizer:
+    """3D visualization for dual arm system using Qt/PyQtGraph"""
 
-    def __init__(self, controller: DualArmController, sample_center: Tuple[float, float, float],
-                 arm_bases: dict = None):
+    def __init__(self, sample_center=(0, 0, 0), arm_bases=None, workspace_size=600):
         """
-        Initialize scanning planner
+        Initialize visualization
 
         Args:
-            controller: Dual arm controller
-            sample_center: (x, y, z) coordinates of sample center (origin)
+            sample_center: (x, y, z) center of sample
             arm_bases: Dictionary with arm base positions
+            workspace_size: Size of visualization cube in mm
         """
-        self.controller = controller
         self.sample_center = np.array(sample_center)
         self.arm_bases = arm_bases or {
-            'left': (-400, 0, 200),  # Left arm base in mm
-            'right': (400, 0, 200)  # Right arm base in mm
+            'left': (-400, 0, 200),
+            'right': (400, 0, 200)
         }
-        self.arm_reach = 500  # mm (approximate reach)
-        self.safety_margin = 30  # mm safety margin
-        self.min_safe_distance = 150  # mm minimum distance between arms
+        self.workspace_size = workspace_size
+        self.app = None
+        self.window = None
+        self.plot_widget = None
+        self.scatter_plot = None
+        self.arm_lines = {}
+        self.path_plots = {}
 
-    def spherical_to_cartesian(self, r: float, theta: float, phi: float) -> Tuple[float, float, float]:
-        """
-        Convert spherical coordinates to Cartesian (sample-centered)
+        # If PyQt is available, use it; otherwise fall back to matplotlib
+        if PYQT_AVAILABLE:
+            self.use_pyqt = True
+            self._setup_pyqt_visualization()
+        else:
+            self.use_pyqt = False
+            self._setup_matplotlib_visualization()
 
-        Args:
-            r: Radial distance from sample center (mm)
-            theta: Polar angle (from +z axis) in radians
-            phi: Azimuthal angle (from +x axis, toward +y) in radians
+    def _setup_pyqt_visualization(self):
+        """Setup PyQt-based visualization"""
+        try:
+            # Create Qt application
+            self.app = QtWidgets.QApplication.instance()
+            if self.app is None:
+                self.app = QtWidgets.QApplication(sys.argv)
 
-        Returns:
-            (x, y, z) Cartesian coordinates relative to sample center
-        """
-        x = r * np.sin(theta) * np.cos(phi)
-        y = r * np.sin(theta) * np.sin(phi)
-        z = r * np.cos(theta)
-        return (x, y, z)
+            # Create main window
+            self.window = QtWidgets.QMainWindow()
+            self.window.setWindowTitle('RoArm-M3 Dual Arm 3D Scanner')
+            self.window.setGeometry(100, 100, 1000, 800)
 
-    def cartesian_to_spherical(self, x: float, y: float, z: float) -> Tuple[float, float, float]:
-        """
-        Convert Cartesian coordinates to spherical (sample-centered)
+            # Create central widget and layout
+            central_widget = QtWidgets.QWidget()
+            self.window.setCentralWidget(central_widget)
+            layout = QtWidgets.QVBoxLayout(central_widget)
 
-        Args:
-            x, y, z: Cartesian coordinates relative to sample center
+            # Create 3D plot widget
+            self.plot_widget = gl.GLViewWidget()
+            self.plot_widget.opts['distance'] = 800
+            layout.addWidget(self.plot_widget)
 
-        Returns:
-            (r, theta, phi) spherical coordinates
-        """
-        r = np.sqrt(x ** 2 + y ** 2 + z ** 2)
-        if r == 0:
-            return (0, 0, 0)
-        theta = np.arccos(z / r)  # Polar angle from +z axis
-        phi = np.arctan2(y, x)  # Azimuthal angle from +x axis
-        return (r, theta, phi)
+            # Add coordinate axes
+            self._add_coordinate_axes()
 
-    def generate_scanning_positions(self,
-                                    r_range: Tuple[float, float],
-                                    theta_range: Tuple[float, float],
-                                    phi_range: Tuple[float, float],
-                                    r_steps: int = 10,
-                                    theta_steps: int = 10,
-                                    phi_steps: int = 10) -> List[Tuple[float, float, float]]:
-        """
-        Generate scanning positions in spherical coordinates
+            # Add sample center
+            self._add_sample_center()
 
-        Args:
-            r_range: (min, max) radial distance in mm
-            theta_range: (min, max) polar angle in radians (0 to pi)
-            phi_range: (min, max) azimuthal angle in radians (0 to 2pi)
-            r_steps, theta_steps, phi_steps: Number of steps in each dimension
+            # Add arm bases
+            self._add_arm_bases()
 
-        Returns:
-            List of (r, theta, phi) positions
-        """
-        r_min, r_max = r_range
-        theta_min, theta_max = theta_range
-        phi_min, phi_max = phi_range
+            # Add workspace boundaries
+            self._add_workspace_boundaries()
 
-        # Generate linear spacing for better coverage
-        r_values = np.linspace(r_min, r_max, r_steps)
-        theta_values = np.linspace(theta_min, theta_max, theta_steps)
-        phi_values = np.linspace(phi_min, phi_max, phi_steps)
+            logger.info("PyQt visualization initialized successfully")
 
-        positions = []
-        for r in r_values:
-            for theta in theta_values:
-                for phi in phi_values:
-                    positions.append((r, theta, phi))
+        except Exception as e:
+            logger.error(f"Error setting up PyQt visualization: {e}")
+            self.use_pyqt = False
+            self._setup_matplotlib_visualization()
 
-        return positions
+    def _setup_matplotlib_visualization(self):
+        """Setup matplotlib-based visualization as fallback"""
+        logger.info("Using matplotlib fallback visualization")
+        try:
+            self.fig = plt.figure(figsize=(12, 8))
+            self.ax = self.fig.add_subplot(111, projection='3d')
+            self._setup_matplotlib_plot()
+        except Exception as e:
+            logger.error(f"Error setting up matplotlib visualization: {e}")
 
-    def check_arm_reachability(self, position: Tuple[float, float, float],
-                               arm_base: Tuple[float, float, float]) -> bool:
-        """
-        Check if a position is reachable by an arm
+    def _setup_matplotlib_plot(self):
+        """Setup the initial matplotlib plot"""
+        if hasattr(self, 'ax'):
+            # Set labels
+            self.ax.set_xlabel('X (mm)')
+            self.ax.set_ylabel('Y (mm)')
+            self.ax.set_zlabel('Z (mm)')
+            self.ax.set_title('RoArm-M3 Dual Arm 3D Scanner')
 
-        Args:
-            position: (x, y, z) target position relative to sample
-            arm_base: (x, y, z) arm base position
+            # Set equal aspect ratio
+            self.ax.set_xlim([-self.workspace_size / 2, self.workspace_size / 2])
+            self.ax.set_ylim([-self.workspace_size / 2, self.workspace_size / 2])
+            self.ax.set_zlim([0, self.workspace_size / 2])
 
-        Returns:
-            True if position is reachable
-        """
-        # Convert sample-relative position to absolute coordinates
-        target_x = self.sample_center[0] + position[0]
-        target_y = self.sample_center[1] + position[1]
-        target_z = self.sample_center[2] + position[2]
+            # Plot sample center
+            self.ax.scatter([self.sample_center[0]], [self.sample_center[1]], [self.sample_center[2]],
+                            c='red', s=100, label='Sample Center')
 
-        # Calculate distance from arm base to target
-        distance = np.sqrt(
-            (target_x - arm_base[0]) ** 2 +
-            (target_y - arm_base[1]) ** 2 +
-            (target_z - arm_base[2]) ** 2
-        )
+            # Plot arm bases
+            for arm_name, base_pos in self.arm_bases.items():
+                color = 'blue' if arm_name == 'left' else 'green'
+                self.ax.scatter([base_pos[0]], [base_pos[1]], [base_pos[2]],
+                                c=color, s=50, label=f'{arm_name.capitalize()} Arm Base')
 
-        # Check if within reach (with safety margin)
-        return distance <= (self.arm_reach - self.safety_margin)
+            # Plot workspace boundaries
+            self._plot_matplotlib_workspace_boundaries()
 
-    def check_collision_risk(self, left_pos: Tuple[float, float, float],
-                             right_pos: Tuple[float, float, float]) -> bool:
-        """
-        Check if two arm positions have collision risk
+            # Add legend
+            self.ax.legend()
 
-        Args:
-            left_pos: (x, y, z) left arm position relative to sample
-            right_pos: (x, y, z) right arm position relative to sample
+    def _plot_matplotlib_workspace_boundaries(self):
+        """Plot the workspace boundaries in matplotlib"""
+        # Draw a wireframe cube representing the workspace
+        r = self.workspace_size / 2
+        x = [-r, r, r, -r, -r, -r, -r, -r, -r, -r, r, r, r, r, r, r]
+        y = [-r, -r, -r, -r, -r, -r, r, r, -r, -r, -r, -r, r, r, r, r]
+        z = [0, 0, 0, 0, 0, r, r, 0, 0, r, r, r, r, 0, 0, r]
 
-        Returns:
-            True if collision risk detected
-        """
-        # Convert to absolute coordinates
-        left_abs = (
-            self.sample_center[0] + left_pos[0],
-            self.sample_center[1] + left_pos[1],
-            self.sample_center[2] + left_pos[2]
-        )
+        # Plot the cube edges
+        for i in range(0, len(x), 2):
+            if i + 1 < len(x):
+                self.ax.plot([x[i], x[i + 1]], [y[i], y[i + 1]], [z[i], z[i + 1]], 'k--', alpha=0.3)
 
-        right_abs = (
-            self.sample_center[0] + right_pos[0],
-            self.sample_center[1] + right_pos[1],
-            self.sample_center[2] + right_pos[2]
-        )
+    def _add_coordinate_axes(self):
+        """Add coordinate axes to the 3D plot"""
+        # X axis (red)
+        x_axis = gl.GLLinePlotItem(pos=np.array([[0, 0, 0], [200, 0, 0]]), color=(1, 0, 0, 1), width=3)
+        self.plot_widget.addItem(x_axis)
 
-        # Calculate distance between arm end effectors
-        dist = np.sqrt(
-            sum((a - b) ** 2 for a, b in zip(left_abs, right_abs))
-        )
+        # Y axis (green)
+        y_axis = gl.GLLinePlotItem(pos=np.array([[0, 0, 0], [0, 200, 0]]), color=(0, 1, 0, 1), width=3)
+        self.plot_widget.addItem(y_axis)
 
-        # Check collision risk
-        if dist < self.min_safe_distance:
-            return True
+        # Z axis (blue)
+        z_axis = gl.GLLinePlotItem(pos=np.array([[0, 0, 0], [0, 0, 200]]), color=(0, 0, 1, 1), width=3)
+        self.plot_widget.addItem(z_axis)
 
-        # Check if arms are crossing the center line (potential collision)
-        if (left_abs[1] > 0 and right_abs[1] < 0) or (left_abs[1] < 0 and right_abs[1] > 0):
-            # Arms on opposite sides, check x-coordinate overlap
-            if abs(left_abs[0] - right_abs[0]) < 200 and abs(left_abs[2] - right_abs[2]) < 100:
-                return True
+    def _add_sample_center(self):
+        """Add sample center to the 3D plot"""
+        sample_point = gl.GLScatterPlotItem(pos=np.array([self.sample_center]), color=(1, 0, 0, 1), size=10)
+        self.plot_widget.addItem(sample_point)
 
-        return False
+    def _add_arm_bases(self):
+        """Add arm base positions to the 3D plot"""
+        base_positions = np.array(list(self.arm_bases.values()))
+        base_colors = np.array([[0, 0, 1, 1], [0, 1, 0, 1]])  # Blue for left, green for right
+        base_points = gl.GLScatterPlotItem(pos=base_positions, color=base_colors, size=8)
+        self.plot_widget.addItem(base_points)
 
-    def assign_positions_to_arms(self, spherical_positions: List[Tuple[float, float, float]]) -> List[
-        Tuple[Tuple[float, float, float], Tuple[float, float, float]]]:
-        """
-        Assign spherical positions to arms with collision avoidance
+    def _add_workspace_boundaries(self):
+        """Add workspace boundaries to the 3D plot"""
+        # Create a wireframe cube
+        vertices = np.array([
+            [-300, -300, 0], [300, -300, 0], [300, 300, 0], [-300, 300, 0],  # Bottom face
+            [-300, -300, 300], [300, -300, 300], [300, 300, 300], [-300, 300, 300]  # Top face
+        ])
 
-        Args:
-            spherical_positions: List of (r, theta, phi) positions
-
-        Returns:
-            List of ((left_pos), (right_pos)) pairs
-        """
-        # Convert spherical to Cartesian positions relative to sample
-        cartesian_positions = [
-            self.spherical_to_cartesian(r, theta, phi)
-            for r, theta, phi in spherical_positions
+        # Define edges
+        edges = [
+            [0, 1], [1, 2], [2, 3], [3, 0],  # Bottom face
+            [4, 5], [5, 6], [6, 7], [7, 4],  # Top face
+            [0, 4], [1, 5], [2, 6], [3, 7]  # Vertical edges
         ]
 
-        # Separate positions based on Y coordinate and reachability
-        left_assignable = []
-        right_assignable = []
+        # Create line segments
+        for edge in edges:
+            pts = vertices[[edge[0], edge[1]]]
+            line = gl.GLLinePlotItem(pos=pts, color=(0.5, 0.5, 0.5, 0.5), width=1)
+            self.plot_widget.addItem(line)
 
-        for i, pos in enumerate(cartesian_positions):
-            # Check reachability for both arms
-            left_reachable = self.check_arm_reachability(pos, self.arm_bases['left'])
-            right_reachable = self.check_arm_reachability(pos, self.arm_bases['right'])
-
-            if left_reachable and right_reachable:
-                # Both can reach, assign based on Y coordinate
-                if pos[1] <= 0:  # Negative Y -> left arm preferred
-                    left_assignable.append((i, pos))
-                else:  # Positive Y -> right arm preferred
-                    right_assignable.append((i, pos))
-            elif left_reachable:
-                left_assignable.append((i, pos))
-            elif right_reachable:
-                right_assignable.append((i, pos))
-
-        # Create pairs avoiding collisions
-        pairs = []
-        used_indices = set()
-
-        # Pair positions trying to minimize collision risk
-        for left_idx, left_pos in left_assignable:
-            if left_idx in used_indices:
-                continue
-
-            best_right = None
-            best_distance = float('inf')
-
-            # Find the best matching right position that doesn't collide
-            for right_idx, right_pos in right_assignable:
-                if right_idx in used_indices:
-                    continue
-
-                if not self.check_collision_risk(left_pos, right_pos):
-                    # Calculate some metric for good pairing (e.g., distance to optimize workspace)
-                    pairing_metric = abs(left_pos[0] - right_pos[0]) + abs(left_pos[2] - right_pos[2])
-                    if pairing_metric < best_distance:
-                        best_distance = pairing_metric
-                        best_right = (right_idx, right_pos)
-
-            if best_right:
-                right_idx, right_pos = best_right
-                pairs.append((left_pos, right_pos))
-                used_indices.add(left_idx)
-                used_indices.add(right_idx)
-
-        return pairs
-
-    def plan_hemispherical_scan(self,
-                                r_min: float = 80, r_max: float = 250,
-                                theta_min: float = 0, theta_max: float = np.pi / 2,
-                                phi_min: float = 0, phi_max: float = 2 * np.pi,
-                                r_steps: int = 6,
-                                theta_steps: int = 5,
-                                phi_steps: int = 10) -> List[
-        Tuple[Tuple[float, float, float], Tuple[float, float, float]]]:
+    def update_arm_positions(self, left_pos: Tuple[float, float, float],
+                             right_pos: Tuple[float, float, float]):
         """
-        Plan a hemispherical scanning pattern for both arms with collision avoidance
+        Update the arm positions in the visualization
 
         Args:
-            r_min, r_max: Radial distance range in mm
-            theta_min, theta_max: Polar angle range (0 to pi/2 for hemisphere)
-            phi_min, phi_max: Azimuthal angle range (0 to 2pi)
-            r_steps, theta_steps, phi_steps: Sampling resolution
-
-        Returns:
-            List of ((left_arm_pos), (right_arm_pos)) pairs in Cartesian coordinates
+            left_pos: (x, y, z) position of left arm end effector
+            right_pos: (x, y, z) position of right arm end effector
         """
-        # Generate positions in spherical coordinates
-        spherical_positions = self.generate_scanning_positions(
-            r_range=(r_min, r_max),
-            theta_range=(theta_min, theta_max),
-            phi_range=(phi_min, phi_max),
-            r_steps=r_steps,
-            theta_steps=theta_steps,
-            phi_steps=phi_steps
-        )
+        if self.use_pyqt:
+            self._update_pyqt_arm_positions(left_pos, right_pos)
+        else:
+            self._update_matplotlib_arm_positions(left_pos, right_pos)
 
-        # Convert to world coordinates and assign to arms
-        world_positions = []
-        for r, theta, phi in spherical_positions:
-            # Convert to Cartesian relative to sample center
-            dx, dy, dz = self.spherical_to_cartesian(r, theta, phi)
-            world_x = self.sample_center[0] + dx
-            world_y = self.sample_center[1] + dy
-            world_z = self.sample_center[2] + dz
-            world_positions.append((world_x, world_y, world_z))
+    def _update_pyqt_arm_positions(self, left_pos: Tuple[float, float, float],
+                                   right_pos: Tuple[float, float, float]):
+        """Update arm positions in PyQt visualization"""
+        try:
+            # Remove existing arm lines
+            for arm_name in ['left', 'right']:
+                if arm_name in self.arm_lines:
+                    self.plot_widget.removeItem(self.arm_lines[arm_name])
 
-        # Assign positions to arms with collision avoidance
-        # Convert back to sample-relative coordinates for assignment
-        sample_positions = [
-            (pos[0] - self.sample_center[0],
-             pos[1] - self.sample_center[1],
-             pos[2] - self.sample_center[2])
-            for pos in world_positions
-        ]
+            # Plot left arm (from base to end effector)
+            left_base = self.arm_bases['left']
+            left_line_data = np.array([left_base, left_pos])
+            left_line = gl.GLLinePlotItem(pos=left_line_data, color=(0, 0, 1, 1), width=3)
+            self.plot_widget.addItem(left_line)
+            self.arm_lines['left'] = left_line
 
-        # Assign positions to arms
-        arm_pairs = self.assign_positions_to_arms(
-            [(r, theta, phi) for r, theta, phi in spherical_positions]
-        )
+            # Plot right arm (from base to end effector)
+            right_base = self.arm_bases['right']
+            right_line_data = np.array([right_base, right_pos])
+            right_line = gl.GLLinePlotItem(pos=right_line_data, color=(0, 1, 0, 1), width=3)
+            self.plot_widget.addItem(right_line)
+            self.arm_lines['right'] = right_line
 
-        # Convert back to world coordinates for return
-        world_pairs = []
-        for left_sph, right_sph in arm_pairs:
-            # Convert spherical to Cartesian for left arm
-            left_cart = self.spherical_to_cartesian(left_sph[0], left_sph[1], left_sph[2])
-            left_world = (
-                self.sample_center[0] + left_cart[0],
-                self.sample_center[1] + left_cart[1],
-                self.sample_center[2] + left_cart[2]
-            )
+        except Exception as e:
+            logger.error(f"Error updating PyQt arm positions: {e}")
 
-            # Convert spherical to Cartesian for right arm
-            right_cart = self.spherical_to_cartesian(right_sph[0], right_sph[1], right_sph[2])
-            right_world = (
-                self.sample_center[0] + right_cart[0],
-                self.sample_center[1] + right_cart[1],
-                self.sample_center[2] + right_cart[2]
-            )
+    def _update_matplotlib_arm_positions(self, left_pos: Tuple[float, float, float],
+                                         right_pos: Tuple[float, float, float]):
+        """Update arm positions in matplotlib visualization"""
+        try:
+            # Plot left arm (from base to end effector)
+            left_base = self.arm_bases['left']
+            left_x = [left_base[0], left_pos[0]]
+            left_y = [left_base[1], left_pos[1]]
+            left_z = [left_base[2], left_pos[2]]
+            self.ax.plot(left_x, left_y, left_z, 'b-', linewidth=3, label='Left Arm')
 
-            world_pairs.append((left_world, right_world))
+            # Plot right arm (from base to end effector)
+            right_base = self.arm_bases['right']
+            right_x = [right_base[0], right_pos[0]]
+            right_y = [right_base[1], right_pos[1]]
+            right_z = [right_base[2], right_pos[2]]
+            self.ax.plot(right_x, right_y, right_z, 'g-', linewidth=3, label='Right Arm')
 
-        return world_pairs
+            # Refresh the plot
+            plt.draw()
 
-    def execute_scan(self, position_pairs: List[Tuple[Tuple[float, float, float], Tuple[float, float, float]]]):
+        except Exception as e:
+            logger.error(f"Error updating matplotlib arm positions: {e}")
+
+    def plot_scanning_path(self, positions: List[Tuple[float, float, float]],
+                           arm_id: str = 'left'):
         """
-        Execute the scanning sequence
+        Plot a scanning path
 
         Args:
-            position_pairs: List of ((arm1_pos), (arm2_pos)) pairs
+            positions: List of (x, y, z) positions
+            arm_id: 'left' or 'right' to specify which arm
         """
-        print(f"Executing scan with {len(position_pairs)} position pairs")
+        if self.use_pyqt:
+            self._plot_pyqt_scanning_path(positions, arm_id)
+        else:
+            self._plot_matplotlib_scanning_path(positions, arm_id)
 
-        for i, (arm1_pos, arm2_pos) in enumerate(position_pairs):
-            print(f"Moving to position pair {i + 1}/{len(position_pairs)}")
-            print(f"  Arm 1: ({arm1_pos[0]:.1f}, {arm1_pos[1]:.1f}, {arm1_pos[2]:.1f})")
-            print(f"  Arm 2: ({arm2_pos[0]:.1f}, {arm2_pos[1]:.1f}, {arm2_pos[2]:.1f})")
+    def _plot_pyqt_scanning_path(self, positions: List[Tuple[float, float, float]],
+                                 arm_id: str = 'left'):
+        """Plot scanning path in PyQt visualization"""
+        try:
+            if not positions:
+                return
 
-            # Move both arms simultaneously
-            success = self.controller.move_both_to_world(arm1_pos, arm2_pos)
+            # Remove existing path for this arm
+            if arm_id in self.path_plots:
+                self.plot_widget.removeItem(self.path_plots[arm_id])
 
-            if success:
-                print("  Movement successful")
-                # Here you would trigger your spectrometer/light measurement
-                # time.sleep(0.5)  # Allow time for measurement
-            else:
-                print("  Movement failed")
+            # Convert positions to numpy array
+            path_data = np.array(positions)
 
-            # Add a small delay between movements
-            # time.sleep(0.1)
+            # Set color based on arm
+            color = (0, 0, 1, 0.7) if arm_id == 'left' else (0, 1, 0, 0.7)
+
+            # Create path plot
+            path_plot = gl.GLLinePlotItem(pos=path_data, color=color, width=1)
+            self.plot_widget.addItem(path_plot)
+            self.path_plots[arm_id] = path_plot
+
+        except Exception as e:
+            logger.error(f"Error plotting PyQt scanning path: {e}")
+
+    def _plot_matplotlib_scanning_path(self, positions: List[Tuple[float, float, float]],
+                                       arm_id: str = 'left'):
+        """Plot scanning path in matplotlib visualization"""
+        try:
+            if not positions:
+                return
+
+            x_vals = [pos[0] for pos in positions]
+            y_vals = [pos[1] for pos in positions]
+            z_vals = [pos[2] for pos in positions]
+
+            color = 'blue' if arm_id == 'left' else 'green'
+            label = f'{arm_id.capitalize()} Arm Path'
+
+            self.ax.plot(x_vals, y_vals, z_vals, color=color, alpha=0.7, linewidth=1, label=label)
+            self.ax.scatter(x_vals, y_vals, z_vals, color=color, s=20, alpha=0.6)
+
+            # Update legend
+            self.ax.legend()
+
+            # Refresh the plot
+            plt.draw()
+
+        except Exception as e:
+            logger.error(f"Error plotting matplotlib scanning path: {e}")
+
+    def highlight_current_position(self, left_pos: Tuple[float, float, float],
+                                   right_pos: Tuple[float, float, float]):
+        """
+        Highlight the current scanning positions
+
+        Args:
+            left_pos: Current left arm position
+            right_pos: Current right arm position
+        """
+        if self.use_pyqt:
+            self._highlight_pyqt_current_position(left_pos, right_pos)
+        else:
+            self._highlight_matplotlib_current_position(left_pos, right_pos)
+
+    def _highlight_pyqt_current_position(self, left_pos: Tuple[float, float, float],
+                                         right_pos: Tuple[float, float, float]):
+        """Highlight current position in PyQt visualization"""
+        try:
+            # Create highlight points
+            highlight_points = gl.GLScatterPlotItem(
+                pos=np.array([left_pos, right_pos]),
+                color=np.array([[1, 0, 0, 1], [1, 1, 0, 1]]),  # Red for left, yellow for right
+                size=15
+            )
+            self.plot_widget.addItem(highlight_points)
+
+            # Remove after a short delay (this would need proper Qt timer handling)
+
+        except Exception as e:
+            logger.error(f"Error highlighting PyQt current position: {e}")
+
+    def _highlight_matplotlib_current_position(self, left_pos: Tuple[float, float, float],
+                                               right_pos: Tuple[float, float, float]):
+        """Highlight current position in matplotlib visualization"""
+        try:
+            # Plot current positions
+            self.ax.scatter([left_pos[0]], [left_pos[1]], [left_pos[2]],
+                            c='red', s=100, alpha=0.8)
+            self.ax.scatter([right_pos[0]], [right_pos[1]], [right_pos[2]],
+                            c='yellow', s=100, alpha=0.8)
+            plt.draw()
+
+        except Exception as e:
+            logger.error(f"Error highlighting matplotlib current position: {e}")
+
+    def clear_paths(self):
+        """Clear all scanning paths from visualization"""
+        if self.use_pyqt:
+            self._clear_pyqt_paths()
+        else:
+            self._clear_matplotlib_paths()
+
+    def _clear_pyqt_paths(self):
+        """Clear paths in PyQt visualization"""
+        try:
+            for arm_id in list(self.path_plots.keys()):
+                self.plot_widget.removeItem(self.path_plots[arm_id])
+            self.path_plots.clear()
+        except Exception as e:
+            logger.error(f"Error clearing PyQt paths: {e}")
+
+    def _clear_matplotlib_paths(self):
+        """Clear paths in matplotlib visualization"""
+        try:
+            # Clear all plotted lines and scatter points except the main elements
+            pass  # In matplotlib, this would require more sophisticated tracking
+        except Exception as e:
+            logger.error(f"Error clearing matplotlib paths: {e}")
+
+    def show(self):
+        """Display the visualization"""
+        if self.use_pyqt:
+            self._show_pyqt()
+        else:
+            self._show_matplotlib()
+
+    def _show_pyqt(self):
+        """Show PyQt visualization"""
+        try:
+            if self.window:
+                self.window.show()
+                if self.app:
+                    self.app.exec_()
+        except Exception as e:
+            logger.error(f"Error showing PyQt visualization: {e}")
+
+    def _show_matplotlib(self):
+        """Show matplotlib visualization"""
+        try:
+            plt.show()
+        except Exception as e:
+            logger.error(f"Error showing matplotlib visualization: {e}")
+
+    def save_figure(self, filename: str):
+        """Save the current figure"""
+        if self.use_pyqt:
+            logger.warning("Save figure not implemented for PyQt visualization")
+        else:
+            try:
+                self.fig.savefig(filename, dpi=300, bbox_inches='tight')
+            except Exception as e:
+                logger.error(f"Error saving matplotlib figure: {e}")
 
 
-def main():
-    # Initialize controller
-    controller = DualArmController('/dev/ttyUSB0', '/dev/ttyUSB1')
-
-    try:
-        # Connect to arms
-        if not controller.connect():
-            print("Failed to connect to arms")
-            return
-
-        # Define sample center (in mm) - origin point
-        sample_center = (0, 0, 0)
-
-        # Define arm bases
-        arm_bases = {
-            'left': (-400, 0, 200),  # Spectrometer arm
-            'right': (400, 0, 200)  # Illuminator arm
-        }
-
-        # Initialize planner
-        planner = ScanningPlanner(controller, sample_center, arm_bases)
-
-        # Plan hemispherical scan
-        position_pairs = planner.plan_hemispherical_scan(
-            r_min=80, r_max=250,
-            theta_min=0, theta_max=np.pi / 2,
-            phi_min=0, phi_max=2 * np.pi,
-            r_steps=4,
-            theta_steps=3,
-            phi_steps=6
-        )
-
-        print(f"Planned {len(position_pairs)} scanning positions")
-
-        # Execute scan (commented out for safety)
-        # Uncomment the next line to actually move the arms
-        # planner.execute_scan(position_pairs)
-
-        print("Scan planning complete. Uncomment execute_scan() to run.")
-
-    except KeyboardInterrupt:
-        print("\nScanning interrupted by user")
-    finally:
-        controller.disconnect()
-
-
+# Example usage
 if __name__ == "__main__":
-    main()
+    # Create visualizer
+    viz = ArmVisualizer()
+
+    # Example arm positions
+    left_pos = (200, -100, 100)
+    right_pos = (200, 100, 100)
+
+    # Update arm positions
+    viz.update_arm_positions(left_pos, right_pos)
+
+    # Show the visualization
+    viz.show()
