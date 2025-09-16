@@ -8,7 +8,7 @@ import os
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from roarm_control import DualArmController
+from arm import DualArmController
 import numpy as np
 from typing import List, Tuple
 import math
