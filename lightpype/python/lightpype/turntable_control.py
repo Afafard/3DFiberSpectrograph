@@ -54,7 +54,7 @@ class MotorPattern(Enum):
 class StepperMotorManager:
     """Manages stepper motor with asynchronous task control and abstracted patterns"""
 
-    def __init__(self, config_file: str = "motor_gpio.json"):
+    def __init__(self, config_file: str = "gpio_control.json"):
         self.config_file = config_file
         self.motor_pins: Dict[str, int] = {}
         self.enable_pins: List[int] = []

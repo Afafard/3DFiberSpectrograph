@@ -17,7 +17,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from arm import DualArmController, ScanningPlanner
 from viz import ArmVisualizer
 from turntable_control import StepperMotorManager
-from lightpype.python.lightpype.gpio_control.led_manager import LEDManager  # Add this import
+from lightpype.python.lightpype.led_manager import LEDManager  # Add this import
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
