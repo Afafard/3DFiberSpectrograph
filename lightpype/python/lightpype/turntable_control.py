@@ -58,9 +58,9 @@ class StepperMotorManager:
         self.config_file = config_file
         self.motor_pins: Dict[str, int] = {}
         self.enable_pins: List[int] = []
-        self.steps_per_revolution = 200
+        self.steps_per_revolution = 400
         self.current_angle = 0.0
-        self.delay = 0.005  # Default delay between steps
+        self.delay = 0.115  # Default delay between steps
         self.active_tasks: Dict[str, asyncio.Task] = {}
         self.tasks: Dict[str, MotorTask] = {}
         self.task_lock = threading.Lock()
