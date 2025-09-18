@@ -1,6 +1,0 @@
-# requirements.txt
-pyserial
-numpy
-scipy
-matplotlib
-gpiozero

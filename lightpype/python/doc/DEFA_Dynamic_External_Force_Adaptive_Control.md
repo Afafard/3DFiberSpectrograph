@@ -285,8 +285,8 @@ The DEFA system integrates with other RoArm-M3 Pro control features:
 
 ### Documentation
 - [RoArm-M3 Wiki Page](https://www.waveshare.com/wiki/RoArm-M3)
-- [JSON Command System Documentation](./JSON_Command_System.md)
-- [Python API Documentation](./Python_API.md)
+- [JSON Command System Documentation](JSON_Command_System.md)
+- [Python API Documentation](Python_API.md)
 
 ### Hardware Resources
 - [QMI8658 6-axis Motion Sensor Datasheet](https://files.waveshare.com/wiki/common/QMI8658_Datasheet.pdf) ([Local Copy](../hardware/misc/misc/datasheets/QMI8658_Datasheet.pdf))

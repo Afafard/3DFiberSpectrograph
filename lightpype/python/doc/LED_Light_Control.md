@@ -230,8 +230,8 @@ The LED Light Control system operates independently of most other control featur
 
 ### Documentation
 - [RoArm-M3 Wiki Page](https://www.waveshare.com/wiki/RoArm-M3)
-- [JSON Command System Documentation](./JSON_Command_System.md)
-- [Python API Documentation](./Python_API.md)
+- [JSON Command System Documentation](JSON_Command_System.md)
+- [Python API Documentation](Python_API.md)
 
 ### Hardware Resources
 - [General Driver Board for Robots Schematic](https://files.waveshare.com/wiki/common/General_Driver_for_Robots_SCH.pdf) ([Local Copy](../hardware/main_control/ESP32-WROOM-32/datasheets/General_Driver_for_Robots_SCH.pdf))

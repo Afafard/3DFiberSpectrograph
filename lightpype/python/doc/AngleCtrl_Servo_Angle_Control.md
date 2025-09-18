@@ -295,8 +295,8 @@ The AngleCtrl system integrates with other RoArm-M3 Pro control features:
 
 ### Documentation
 - [RoArm-M3 Wiki Page](https://www.waveshare.com/wiki/RoArm-M3)
-- [JSON Command System Documentation](./JSON_Command_System.md)
-- [Python API Documentation](./Python_API.md)
+- [JSON Command System Documentation](JSON_Command_System.md)
+- [Python API Documentation](Python_API.md)
 
 ### Hardware Resources
 - [ST3235 Metal Shell Servo Datasheet](https://www.waveshare.com/st3235-servo.htm)

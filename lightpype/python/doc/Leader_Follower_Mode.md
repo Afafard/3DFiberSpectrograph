@@ -345,8 +345,8 @@ The Leader-Follower Mode integrates with other RoArm-M3 Pro control features:
 ### Documentation
 - [RoArm-M3 Wiki Page](https://www.waveshare.com/wiki/RoArm-M3)
 - [ESP-NOW Protocol Documentation](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/network/esp_now.html)
-- [JSON Command System Documentation](./JSON_Command_System.md)
-- [Python API Documentation](./Python_API.md)
+- [JSON Command System Documentation](JSON_Command_System.md)
+- [Python API Documentation](Python_API.md)
 
 ### Hardware Resources
 - [ESP32-WROOM-32 Datasheet](https://www.espressif.com/sites/default/files/documentation/esp32-wroom-32_datasheet_en.pdf)

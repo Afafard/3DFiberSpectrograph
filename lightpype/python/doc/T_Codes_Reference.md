@@ -137,8 +137,8 @@ This documentation is based on information from the following sources:
 
 1. **Waveshare Wiki**: The [RoArm-M3 Wiki Page](https://www.waveshare.com/wiki/RoArm-M3) provides basic information about the JSON command system
 2. **Firmware Analysis**: Examination of the RoArm-M3 Pro firmware reveals the complete set of T codes and their functions
-3. **Leader-Follower Mode Documentation**: The [Leader-Follower Mode Documentation](./Leader_Follower_Mode.md) provides details on ESP-NOW related T codes
-4. **JSON Command System Documentation**: The [JSON Command System Documentation](./JSON_Command_System.md) provides an overview of the command structure
+3. **Leader-Follower Mode Documentation**: The [Leader-Follower Mode Documentation](Leader_Follower_Mode.md) provides details on ESP-NOW related T codes
+4. **JSON Command System Documentation**: The [JSON Command System Documentation](JSON_Command_System.md) provides an overview of the command structure
 5. **Boot Mission System Documentation**: The [Boot Mission System Documentation](./boot_mission/Boot_Mission_System.md) explains the boot mission-related T codes
 
 ## Conclusion

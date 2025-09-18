@@ -1,7 +1,7 @@
-# example_usage.py
+# example_usage.py (updated)
 #!/usr/bin/env python3
 """
-Example usage of the RoArm-M3 scanning system
+Example usage of the RoArm-M3 scanning system with LED status indicators
 """
 
 import time
@@ -67,7 +67,7 @@ def main():
         logger.error(f"Error in example: {e}")
     finally:
         # Cleanup
-        system.controller.disconnect()
+        system.cleanup()
 
 
 if __name__ == "__main__":

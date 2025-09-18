@@ -1,5 +1,33 @@
+
+
+
 import sys
+import os
 import cv2
+
+# Set DISPLAY environment variable for SSH X11 forwarding
+if 'DISPLAY' not in os.environ:
+    os.environ['DISPLAY'] = ':0'
+
+from PyQt5.QtWidgets import QApplication
+print(os.environ)
+
+##
+# Set Qt environment variables if not already set
+if 'QT_DEBUG_PLUGINS' not in os.environ:
+    os.environ['QT_DEBUG_PLUGINS'] = '1'
+if 'QT_QPA_PLATFORM_PLUGIN_PATH' not in os.environ:
+    os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = '/usr/lib/aarch64-linux-gnu/qt5/plugins/platforms'
+
+import sys
+from PyQt5.QtWidgets import QApplication
+
+
+# Initialize QApplication with empty args (required for Qt)
+app = QApplication(sys.argv)
+
+
+
 import numpy as np
 import pyqtgraph as pg
 import json
@@ -305,7 +333,7 @@ class Spectrometer:
             "brightness": 50,
             "contrast": 50,
             "saturation": 50,
-            "sample_height": 360,
+            "sample_height": 160,
             "window_height": 10,
             "smoothing": 10,
             "clipping_limit": 240,
@@ -347,8 +375,11 @@ class Spectrometer:
         self.config["saturation"] = self.saturation
         self.config["sample_height"] = self.sample_height
         self.config["window_height"] = self.window_height
-        self.config["smoothing"] = self.smoothing
         self.config["clipping_limit"] = self.clipping_limit
+
+        # Ensure 'smoothing' is added to the config before saving
+        if hasattr(self, 'ifactor'):
+            self.config["smoothing"] = int(self.ifactor * 100)
 
         # Save dark frame
         if self.dark_frame is not None:
@@ -764,11 +795,11 @@ class MainWindow(QMainWindow):
         self.contrast_slider = create_slider_control("Contrast:", 0, 100, 50, self.set_contrast)
         self.saturation_slider = create_slider_control("Saturation:", 0, 100, 50, self.set_saturation)
 
-        # Sample height control
-        self.height_slider = create_slider_control("Sample Height:", 0, 720, 360, self.set_sample_height)
+        # Profile height control
+        self.height_slider = create_slider_control("Profile Central Height:", 0, 720, 300, self.set_sample_height)
 
-        # Window height control
-        self.window_slider = create_slider_control("Window Height:", 1, 100, 10, self.set_window_height)
+        # Window width control
+        self.window_slider = create_slider_control("Profile Width:", 1, 100, 25, self.set_window_height)
 
         # Smoothing factor
         self.smooth_slider = create_slider_control("Smoothing:", 0, 100, 10, self.set_smoothing)
@@ -1207,7 +1238,6 @@ class MainWindow(QMainWindow):
 
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
     sys.exit(app.exec_())

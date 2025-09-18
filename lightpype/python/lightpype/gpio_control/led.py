@@ -57,7 +57,7 @@ class LEDPattern(Enum):
 class LEDManager:
     """Manages multiple LEDs with asynchronous task control and abstracted patterns"""
 
-    def __init__(self, config_file: str = "gpio.json"):
+    def __init__(self, config_file: str = "gpio_control.json"):
         self.config_file = config_file
         self.leds: Dict[str, LED] = {}
         self.tasks: Dict[str, LEDTask] = {}

@@ -1,23 +1,23 @@
-# scanning_system.py
+# scanning_system.py (updated)
 # !/usr/bin/env python3
 """
-Complete 3D scanning system for dual RoArm-M3 robotic arms with proper geometry
+Complete 3D scanning system for dual RoArm-M3 robotic arms with proper geometry and LED status indicators
 """
 
 import sys
 import os
 import time
-import json
 import numpy as np
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple
 import logging
 
 # Add current directory to path for imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from arm import DualArmController, ScanningPlanner, ArmState
+from arm import DualArmController, ScanningPlanner
 from viz import ArmVisualizer
 from turntable_control import StepperMotorManager
+from lightpype.python.lightpype.gpio_control.led_manager import LEDManager  # Add this import
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 class ScanningSystem:
-    """Complete 3D scanning system with dual arms and turntable"""
+    """Complete 3D scanning system with dual arms, turntable, and LED status indicators"""
 
     def __init__(self, left_port: str = '/dev/ttyUSB0', right_port: str = '/dev/ttyUSB1'):
         """
@@ -37,6 +37,7 @@ class ScanningSystem:
         """
         self.controller = DualArmController(left_port, right_port)
         self.motor_manager = StepperMotorManager()
+        self.led_manager = LEDManager()  # Add LED manager
         self.visualizer = None
         self.sample_center = (0, 0, 0)  # Sample is our origin
         self.arm_bases = {
@@ -56,9 +57,13 @@ class ScanningSystem:
             True if initialization successful, False otherwise
         """
         try:
+            # Set initializing state
+            self.led_manager.set_initializing_state()
+
             # Connect to arms
             if not self.controller.connect():
                 logger.error("Failed to connect to robotic arms")
+                self.led_manager.set_error_state()
                 return False
 
             # Initialize planner
@@ -67,11 +72,14 @@ class ScanningSystem:
             # Initialize visualizer
             self.visualizer = ArmVisualizer(self.sample_center, self.arm_bases)
 
+            # Set system ready
+            self.led_manager.set_system_ready()
             logger.info("System initialized successfully")
             return True
 
         except Exception as e:
             logger.error(f"Error initializing system: {e}")
+            self.led_manager.set_error_state()
             return False
 
     def calibrate_system(self, calibration_points: List[Tuple[float, float, float]] = None):
@@ -81,6 +89,9 @@ class ScanningSystem:
         Args:
             calibration_points: List of calibration points, if None uses default
         """
+        # Set calibration state
+        self.led_manager.set_calibration_state()
+
         if calibration_points is None:
             # Default calibration points around sample center (hemispherical pattern)
             calibration_points = [
@@ -104,6 +115,7 @@ class ScanningSystem:
 
         except Exception as e:
             logger.error(f"Error during calibration: {e}")
+            self.led_manager.set_error_state()
             raise
 
     def load_calibration(self, filename: str = "calibration.pkl"):
@@ -119,6 +131,7 @@ class ScanningSystem:
             logger.info(f"Calibration loaded from {filename}")
         except Exception as e:
             logger.error(f"Error loading calibration: {e}")
+            self.led_manager.set_error_state()
             raise
 
     def save_calibration(self, filename: str = "calibration.pkl"):
@@ -133,11 +146,15 @@ class ScanningSystem:
             logger.info(f"Calibration saved to {filename}")
         except Exception as e:
             logger.error(f"Error saving calibration: {e}")
+            self.led_manager.set_error_state()
             raise
 
     def setup_sample(self):
         """Setup the sample for scanning"""
         try:
+            # Set idle state
+            self.led_manager.set_idle_state()
+
             # Move arms to safe positions away from sample
             self.controller.move_left_to_world(300, -200, 100)  # Left arm safe position
             self.controller.move_right_to_world(300, 200, 100)  # Right arm safe position
@@ -151,12 +168,15 @@ class ScanningSystem:
 
         except Exception as e:
             logger.error(f"Error setting up sample: {e}")
+            self.led_manager.set_error_state()
             raise
 
     def grasp_instruments(self):
         """Grasp the illuminator and spectrometer"""
         try:
             logger.info("Grasping instruments...")
+            # Set moving state
+            self.led_manager.set_moving_state()
 
             # Move to instrument pickup positions
             self.controller.move_left_to_world(200, -300, 50)  # Spectrometer pickup
@@ -178,12 +198,15 @@ class ScanningSystem:
 
         except Exception as e:
             logger.error(f"Error grasping instruments: {e}")
+            self.led_manager.set_error_state()
             raise
 
     def release_instruments(self):
         """Release the illuminator and spectrometer"""
         try:
             logger.info("Releasing instruments...")
+            # Set moving state
+            self.led_manager.set_moving_state()
 
             # Move to release positions
             self.controller.move_left_to_world(200, -300, 50)  # Spectrometer release
@@ -205,6 +228,7 @@ class ScanningSystem:
 
         except Exception as e:
             logger.error(f"Error releasing instruments: {e}")
+            self.led_manager.set_error_state()
             raise
 
     def plan_scan(self,
@@ -229,7 +253,10 @@ class ScanningSystem:
         if not self.planner:
             raise RuntimeError("System not initialized - call initialize_system() first")
 
-        return self.planner.plan_hemispherical_scan(
+        # Set path planning state
+        self.led_manager.set_path_planning_state()
+
+        result = self.planner.plan_hemispherical_scan(
             r_min=r_range[0], r_max=r_range[1],
             theta_min=theta_range[0], theta_max=theta_range[1],
             phi_min=phi_range[0], phi_max=phi_range[1],
@@ -237,6 +264,10 @@ class ScanningSystem:
             theta_steps=theta_steps,
             phi_steps=phi_steps
         )
+
+        # Set idle state after planning
+        self.led_manager.set_idle_state()
+        return result
 
     def visualize_plan(self, position_pairs: List[Tuple[Tuple[float, float, float], Tuple[float, float, float]]]):
         """
@@ -276,6 +307,8 @@ class ScanningSystem:
 
         try:
             logger.info(f"Starting scan with {len(position_pairs)} position pairs")
+            # Set scanning state
+            self.led_manager.set_scanning_state()
 
             # Update visualization with planned path
             if self.visualizer:
@@ -311,13 +344,22 @@ class ScanningSystem:
                         logger.info(
                             f"Executing position pair {i + 1}/{len(position_pairs)} at turntable angle {angle:.1f}°")
 
+                        # Set moving state
+                        self.led_manager.set_moving_state()
+
                         # Move arms to positions
                         success = self.controller.move_both_to_world(arm1_pos, arm2_pos)
 
                         if success:
                             logger.info("  Movement successful")
+                            # Set measurement state
+                            self.led_manager.set_measurement_state()
+
                             # Here you would trigger your spectrometer/light measurement
                             # time.sleep(0.5)  # Allow time for measurement
+
+                            # Clear measurement state
+                            self.led_manager.clear_measurement_state()
 
                             # Update visualization if available
                             if self.visualizer:
@@ -325,6 +367,7 @@ class ScanningSystem:
                                 self.visualizer.highlight_current_position(arm1_pos, arm2_pos)
                         else:
                             logger.warning("  Movement failed")
+                            self.led_manager.set_error_state()
 
                         time.sleep(0.1)  # Small delay between movements
 
@@ -333,9 +376,12 @@ class ScanningSystem:
                 self.planner.execute_scan(position_pairs)
 
             logger.info("Scan completed successfully")
+            # Set idle state
+            self.led_manager.set_idle_state()
 
         except Exception as e:
             logger.error(f"Error during scan execution: {e}")
+            self.led_manager.set_error_state()
             raise
 
     def run_complete_scan(self, save_calibration: bool = True, visualize: bool = True):
@@ -406,93 +452,14 @@ class ScanningSystem:
                 self.controller.disconnect()
             if hasattr(self, 'motor_manager'):
                 self.motor_manager.cleanup()
+            if hasattr(self, 'led_manager'):
+                self.led_manager.cleanup()
 
-
-# Example usage and test functions
-def test_basic_movement():
-    """Test basic arm movements"""
-    system = ScanningSystem()
-
-    try:
-        if system.initialize_system():
-            # Test movements
-            logger.info("Testing basic movements...")
-
-            # Move to some test positions
-            system.controller.move_left_to_world(300, -100, 100)
-            system.controller.move_right_to_world(300, 100, 100)
-
-            time.sleep(2)
-
-            # Test grippers
-            system.controller.grasp_with_left()
-            time.sleep(1)
-            system.controller.release_with_left()
-
-            system.controller.grasp_with_right()
-            time.sleep(1)
-            system.controller.release_with_right()
-
-            logger.info("Basic movement test completed")
-
-    except Exception as e:
-        logger.error(f"Error in basic movement test: {e}")
-    finally:
-        system.controller.disconnect()
-
-
-def test_calibration():
-    """Test calibration process"""
-    system = ScanningSystem()
-
-    try:
-        if system.initialize_system():
-            # Perform calibration
-            system.calibrate_system()
-
-            # Save calibration
-            system.save_calibration("test_calibration.pkl")
-
-            logger.info("Calibration test completed")
-
-    except Exception as e:
-        logger.error(f"Error in calibration test: {e}")
-    finally:
-        system.controller.disconnect()
-
-
-def test_full_scan():
-    """Test complete scanning workflow"""
-    system = ScanningSystem()
-
-    try:
-        system.run_complete_scan(save_calibration=True, visualize=True)
-        logger.info("Full scan test completed")
-
-    except Exception as e:
-        logger.error(f"Error in full scan test: {e}")
-
-
-if __name__ == "__main__":
-    # Run tests based on command line arguments
-    import argparse
-
-    parser = argparse.ArgumentParser(description='RoArm-M3 Scanning System')
-    parser.add_argument('--test', choices=['movement', 'calibration', 'full'],
-                        help='Run specific test')
-    parser.add_argument('--scan', action='store_true', help='Run complete scan')
-
-    args = parser.parse_args()
-
-    if args.test == 'movement':
-        test_basic_movement()
-    elif args.test == 'calibration':
-        test_calibration()
-    elif args.test == 'full':
-        test_full_scan()
-    elif args.scan:
-        system = ScanningSystem()
-        system.run_complete_scan()
-    else:
-        # Default: show help
-        parser.print_help()
+    def cleanup(self):
+        """Clean up all system components"""
+        if hasattr(self, 'controller'):
+            self.controller.disconnect()
+        if hasattr(self, 'motor_manager'):
+            self.motor_manager.cleanup()
+        if hasattr(self, 'led_manager'):
+            self.led_manager.cleanup()

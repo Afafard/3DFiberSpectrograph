@@ -1,4 +1,6 @@
-# RoArm-M3 Dual Robotic Arm 3D Goniometric Scanner
+# Dual Robotic Arm 3D Goniometric Scanner
+
+![Mascot](../../mascot.png)
 
 ## Overview
 
@@ -224,7 +226,6 @@ system.calibrate_system([
 4. Position arms at specified base coordinates
 
 ### Software Dependencies
-```bash
 pip install -r requirements.txt
 ```
 
