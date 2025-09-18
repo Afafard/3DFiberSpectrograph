@@ -1,17 +1,17 @@
 # test_leds.py
-# !/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Test script for LED status indicators
 """
 
 import asyncio
-import time
-from .led_manager import LEDManager
+from lightpype.python.lightpype.led_manager import LEDManager
 
 
 async def test_led_patterns():
     """Test all LED patterns"""
-    led_manager = LEDManager()
+    led_manager = LEDManager(config_file="lightpype/python/lightpype/gpio_control.json")
+
 
     try:
         print("Testing LED patterns...")
