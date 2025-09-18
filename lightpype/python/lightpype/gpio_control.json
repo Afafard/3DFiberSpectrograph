@@ -7,10 +7,10 @@
     },
 
     "motor_pins": {
-        "in1": 5,
-        "in2": 6,
-        "in3": 13,
-        "in4": 19
+        "in4": 5,
+        "in3": 6,
+        "in2": 13,
+        "in1": 19
     },
     "steps_per_revolution": 400,
     "delay": 0.005
