@@ -5,19 +5,16 @@ import sys
 import os
 import cv2
 
-# Set DISPLAY environment variable for SSH X11 forwarding
-if 'DISPLAY' not in os.environ:
-    os.environ['DISPLAY'] = ':0'
 
 from PyQt5.QtWidgets import QApplication
 print(os.environ)
 
 ##
-# Set Qt environment variables if not already set
-if 'QT_DEBUG_PLUGINS' not in os.environ:
-    os.environ['QT_DEBUG_PLUGINS'] = '1'
-if 'QT_QPA_PLATFORM_PLUGIN_PATH' not in os.environ:
-    os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = '/usr/lib/aarch64-linux-gnu/qt5/plugins/platforms'
+# # Set Qt environment variables if not already set
+# if 'QT_DEBUG_PLUGINS' not in os.environ:
+#     os.environ['QT_DEBUG_PLUGINS'] = '1'
+# if 'QT_QPA_PLATFORM_PLUGIN_PATH' not in os.environ:
+os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = '/usr/lib/aarch64-linux-gnu/qt5/plugins/platforms'
 
 import sys
 from PyQt5.QtWidgets import QApplication
