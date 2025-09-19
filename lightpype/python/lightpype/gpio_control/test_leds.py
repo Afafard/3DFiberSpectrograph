@@ -5,7 +5,7 @@ Test script for LED status indicators
 """
 
 import asyncio
-from lightpype.python.lightpype.led_manager import LEDManager
+from lightpype.python.lightpype.gpio_control.led_manager import LEDManager
 
 
 async def test_led_patterns():

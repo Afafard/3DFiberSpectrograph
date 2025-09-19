@@ -3,7 +3,7 @@
 3D Visualization of calibrated robotic arm workspace using matplotlib.
 
 Usage:
-    python visualize_workspace_matplotlib.py arm1_workspace.pkl
+    python visualize_workspace_matplotlib.py dual_calibration.pkl
 """
 
 import sys
@@ -261,12 +261,12 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python visualize_workspace_matplotlib.py arm1_workspace.pkl
+  python visualize_workspace_matplotlib.py dual_calibration.pkl
         """
     )
 
-    parser.add_argument("workspace_file", nargs='?',default='arm1_workspace_test.pkl',
-                        help="Workspace file to visualize (e.g., arm1_workspace.pkl)")
+    parser.add_argument("workspace_file", nargs='?',default='dual_calibration.pkl',
+                        help="Workspace file to visualize (e.g., dual_calibration.pkl)")
 
     args = parser.parse_args()
 

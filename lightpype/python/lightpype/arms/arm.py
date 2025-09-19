@@ -164,6 +164,17 @@ class RoArmM3:
 
             return None
 
+    def return_home(self) -> bool:
+        """
+        Move arm to initial position (CMD_MOVE_INIT)
+
+        Returns:
+            True if successful
+        """
+        command = {"T": 100}
+        self.send_command(command)
+        return True
+
     def get_state(self) -> Optional[ArmState]:
         """
         Get current state of the arm
@@ -311,6 +322,275 @@ class RoArmM3:
             "enable": 1 if enable else 0
         }
 
+        self.send_command(command)
+        return True
+
+    # === NEW FUNCTIONALITY BASED ON ROARM DOCUMENTATION ===
+
+    def move_single_joint_radian(self, joint: int, rad: float, spd: int = 0, acc: int = 10) -> bool:
+        """
+        Move a single joint using radian system (CMD_SINGLE_JOINT_CTRL)
+
+        Args:
+            joint: Joint number (1-6)
+                1: BASE_JOINT
+                2: SHOULDER_JOINT
+                3: ELBOW_JOINT
+                4: WRIST_JOINT
+                5: ROLL_JOINT
+                6: EOAT_JOINT (gripper)
+            rad: Target angle in radians
+            spd: Speed in steps/s (0 for max speed)
+            acc: Acceleration (0-254, unit is 100 steps/s^2)
+
+        Returns:
+            True if successful
+        """
+        command = {
+            "T": 101,
+            "joint": joint,
+            "rad": rad,
+            "spd": spd,
+            "acc": acc
+        }
+        self.send_command(command)
+        return True
+
+    def move_all_joints_radian(self, base: float, shoulder: float, elbow: float,
+                               wrist: float, roll: float, hand: float,
+                               spd: int = 0, acc: int = 10) -> bool:
+        """
+        Move all joints using radian system (CMD_JOINTS_RAD_CTRL)
+
+        Args:
+            base: Base joint angle (radians)
+            shoulder: Shoulder joint angle (radians)
+            elbow: Elbow joint angle (radians)
+            wrist: Wrist joint angle (radians)
+            roll: Roll joint angle (radians)
+            hand: Gripper joint angle (radians)
+            spd: Speed in steps/s (0 for max speed)
+            acc: Acceleration (0-254, unit is 100 steps/s^2)
+
+        Returns:
+            True if successful
+        """
+        command = {
+            "T": 102,
+            "base": base,
+            "shoulder": shoulder,
+            "elbow": elbow,
+            "wrist": wrist,
+            "roll": roll,
+            "hand": hand,
+            "spd": spd,
+            "acc": acc
+        }
+        self.send_command(command)
+        return True
+
+    def move_gripper_radian(self, angle: float, spd: int = 0, acc: int = 0) -> bool:
+        """
+        Move gripper using radian system (CMD_EOAT_HAND_CTRL)
+
+        Args:
+            angle: Gripper angle in radians (1.08 to 3.14)
+            spd: Speed in steps/s (0 for max speed)
+            acc: Acceleration (0-254, unit is 100 steps/s^2)
+
+        Returns:
+            True if successful
+        """
+        command = {
+            "T": 106,
+            "cmd": angle,
+            "spd": spd,
+            "acc": acc
+        }
+        self.send_command(command)
+        return True
+
+    def move_single_joint_angle(self, joint: int, angle: float, spd: int = 10, acc: int = 10) -> bool:
+        """
+        Move a single joint using angle system (CMD_SINGLE_JOINT_ANGLE)
+
+        Args:
+            joint: Joint number (1-6)
+                1: BASE_JOINT
+                2: SHOULDER_JOINT
+                3: ELBOW_JOINT
+                4: WRIST_JOINT
+                5: ROLL_JOINT
+                6: EOAT_JOINT (gripper)
+            angle: Target angle in degrees
+            spd: Speed in °/s (0 for max speed)
+            acc: Acceleration in °/s^2
+
+        Returns:
+            True if successful
+        """
+        command = {
+            "T": 121,
+            "joint": joint,
+            "angle": angle,
+            "spd": spd,
+            "acc": acc
+        }
+        self.send_command(command)
+        return True
+
+    def move_all_joints_angle(self, base: float, shoulder: float, elbow: float,
+                              wrist: float, roll: float, hand: float,
+                              spd: int = 10, acc: int = 10) -> bool:
+        """
+        Move all joints using angle system (CMD_JOINTS_ANGLE_CTRL)
+
+        Args:
+            base: Base joint angle (degrees)
+            shoulder: Shoulder joint angle (degrees)
+            elbow: Elbow joint angle (degrees)
+            wrist: Wrist joint angle (degrees)
+            roll: Roll joint angle (degrees)
+            hand: Gripper joint angle (degrees)
+            spd: Speed in °/s (0 for max speed)
+            acc: Acceleration in °/s^2
+
+        Returns:
+            True if successful
+        """
+        command = {
+            "T": 122,
+            "b": base,
+            "s": shoulder,
+            "e": elbow,
+            "t": wrist,
+            "r": roll,
+            "h": hand,
+            "spd": spd,
+            "acc": acc
+        }
+        self.send_command(command)
+        return True
+
+    def move_single_axis(self, axis: int, pos: float, spd: float = 0.25) -> bool:
+        """
+        Move a single axis (CMD_SINGLE_AXIS_CRTL)
+
+        Args:
+            axis: Axis number
+                1: X-axis
+                2: Y-axis
+                3: Z-axis
+                4: T-axis (Pitch)
+                5: R-axis (Roll)
+                6: G-axis (Gripper)
+            pos: Position in mm or radians
+            spd: Speed (larger = faster)
+
+        Returns:
+            True if successful
+        """
+        command = {
+            "T": 103,
+            "axis": axis,
+            "pos": pos,
+            "spd": spd
+        }
+        self.send_command(command)
+        return True
+
+    def move_to_xyz_position(self, x: float, y: float, z: float,
+                             t: float = 0, r: float = 0, g: float = 3.14,
+                             spd: float = 0.25) -> bool:
+        """
+        Move to XYZ position with full orientation (CMD_XYZT_GOAL_CTRL)
+
+        Args:
+            x, y, z: Position in mm
+            t: Pitch angle (radians)
+            r: Roll angle (radians)
+            g: Gripper angle (radians)
+            spd: Speed (larger = faster)
+
+        Returns:
+            True if successful
+        """
+        command = {
+            "T": 104,
+            "x": x,
+            "y": y,
+            "z": z,
+            "t": t,
+            "r": r,
+            "g": g,
+            "spd": spd
+        }
+        self.send_command(command)
+        return True
+
+    def move_to_xyz_position_direct(self, x: float, y: float, z: float,
+                                    t: float = 0, r: float = 0, g: float = 3.14) -> bool:
+        """
+        Move to XYZ position directly without blocking (CMD_XYZT_DIRECT_CTRL)
+
+        Args:
+            x, y, z: Position in mm
+            t: Pitch angle (radians)
+            r: Roll angle (radians)
+            g: Gripper angle (radians)
+
+        Returns:
+            True if successful
+        """
+        command = {
+            "T": 1041,
+            "x": x,
+            "y": y,
+            "z": z,
+            "t": t,
+            "r": r,
+            "g": g
+        }
+        self.send_command(command)
+        return True
+
+    def get_joint_angles(self) -> Optional[dict]:
+        """
+        Get joint angles and position feedback (CMD_SERVO_RAD_FEEDBACK)
+
+        Returns:
+            Dictionary with joint angles and position or None if failed
+        """
+        response = self.send_command({"T": 105}, wait_for_response=True)
+        return response
+
+    def continuous_movement(self, mode: int, axis: int, cmd: int, spd: int = 0) -> bool:
+        """
+        Enable continuous movement (CMD_CONSTANT_CTRL)
+
+        Args:
+            mode: Movement mode
+                0: Angle control
+                1: Coordinate control
+            axis: Joint/axis to control
+                In angle mode: 1-6 (joints)
+                In coordinate mode: 1-6 (axes)
+            cmd: Movement command
+                0: STOP
+                1: INCREASE
+                2: DECREASE
+            spd: Speed coefficient (0-20)
+
+        Returns:
+            True if successful
+        """
+        command = {
+            "T": 123,
+            "m": mode,
+            "axis": axis,
+            "cmd": cmd,
+            "spd": spd
+        }
         self.send_command(command)
         return True
 
