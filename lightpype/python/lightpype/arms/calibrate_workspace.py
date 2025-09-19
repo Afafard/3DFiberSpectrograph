@@ -17,10 +17,54 @@ import sys
 import os
 from typing import List, Tuple, Dict, Any
 from dataclasses import dataclass, asdict
-from scipy.spatial.transform import Rotation
+import threading
+import queue
 
-from select import select
 
+# --- Helper Functions for Arm Communication ---
+
+def send_command(ser: serial.Serial, cmd: dict):
+    """Sends a JSON command to the arm."""
+    ser.write((json.dumps(cmd) + '\n').encode())
+
+
+def set_arm_led(ser: serial.Serial, state: bool):
+    """Sends an LED control command to the specified arm."""
+    try:
+        led_cmd = {"type": "LedCtrl", "enable": state}
+        send_command(ser, led_cmd)
+        # Small delay to let the command process
+        time.sleep(0.1)
+    except Exception as e:
+        print(f"Warning: Could not set LED: {e}")
+
+
+def read_json_continuously(ser: serial.Serial, data_queue: queue.Queue, stop_event: threading.Event):
+    """
+    Thread target function to continuously read JSON from serial and put valid points in a queue.
+    """
+    while not stop_event.is_set():
+        try:
+            if ser.in_waiting > 0:
+                line = ser.readline().decode('utf-8', errors='ignore').strip()
+                if line.startswith('{'):
+                    data = json.loads(line)
+                    if 'x' in data and 'y' in data and 'z' in data:
+                        # Put the latest data point in the queue, replacing any old one
+                        try:
+                            data_queue.get_nowait()  # Remove old item if queue is full (size 1)
+                        except queue.Empty:
+                            pass
+                        data_queue.put((data['x'], data['y'], data['z']))
+            else:
+                time.sleep(0.01)  # Small sleep to prevent busy-waiting
+        except Exception as e:
+            # Silently handle read errors to keep the thread alive
+            time.sleep(0.1)
+    # print("Serial reading thread stopped.") # Debug
+
+
+# --- Data Classes ---
 
 @dataclass
 class ReferencePoint:
@@ -41,210 +85,209 @@ class WorkspaceCalibration:
     workspace_bounds: Dict[str, Dict[str, float]]
 
 
-def flush_serial_buffer(ser):
-    """Flush serial buffer by reading all available data."""
-    ser.reset_input_buffer()
-    time.sleep(1)  # Wait for the buffer to clear
+# --- Core Calibration Logic ---
 
-    # Read and discard any leftover data
-    while ser.in_waiting > 0:
-        line = ser.readline().decode('utf-8').strip()
-        print(f"Discarding: {line}")  # Debugging statement
-
-def read_serial_point(ser, timeout=5) -> Tuple[float, float, float]:
-    """Read a single point from serial with a timeout."""
-    start_time = time.time()
-    while True:
-        if ser.in_waiting > 0:
-            line = ser.readline().decode('utf-8').strip()
-            if line.startswith('{'):
-                try:
-                    data = json.loads(line)
-                    return data['x'], data['y'], data['z']
-                except Exception as e:
-                    print(f"Error parsing data: {e}")
-                    pass  # Skip malformed JSON
-
-        if time.time() - start_time > timeout:
-            raise TimeoutError("Timeout waiting for valid serial data")
-
-
-
-def read_serial_points(ser, min_distance=5.0, max_freq=30, stop_condition=None):
+def collect_reference_points(ser: serial.Serial, arm_name: str, num_points: int = 5) -> List[ReferencePoint]:
     """
-    Read serial data and collect unique points until stop condition.
+    Collect reference points for arm calibration with real-time feedback.
+    """
+    reference_points = []
+    point_names = [
+        "Sample origin (center of workspace)",
+        "Front-right reference point",
+        "Front-left reference point",
+        "Back reference point",
+        "Folded position (effector close to base)"
+    ]
 
-    Args:
-        ser: Serial connection
-        min_distance: Minimum distance between consecutive points (mm)
-        max_freq: Maximum sampling frequency (Hz)
-        stop_condition: Function that returns True to stop recording
+    print(f"\n=== {arm_name} Reference Point Collection ===")
+    print("Please move the arm to the specified positions.")
+
+    # Turn LED ON to indicate this arm is active
+    set_arm_led(ser, True)
+
+    try:
+        for i in range(num_points):
+            print(f"\n--- Point {i + 1}/{num_points}: {point_names[i]} ---")
+            print(f"Position the {arm_name} at this point. Live coordinates will appear below.")
+            print("Press Enter to record this position.")
+
+            # --- Real-time feedback setup ---
+            data_queue = queue.Queue(maxsize=1)
+            stop_event = threading.Event()
+            reader_thread = threading.Thread(target=read_json_continuously, args=(ser, data_queue, stop_event),
+                                             daemon=True)
+            reader_thread.start()
+
+            # Wait for user input while displaying live data
+            last_displayed_coords = None
+            try:
+                while True:
+                    # Non-blocking check for user input (Enter key)
+                    import select
+                    if select.select([sys.stdin], [], [], 0.05) == ([sys.stdin], [], []):
+                        # Enter key pressed, consume the newline
+                        sys.stdin.readline()
+                        break
+
+                    # Display live coordinates
+                    try:
+                        # Get the latest point from the queue (non-blocking)
+                        x, y, z = data_queue.get_nowait()
+                        current_coords = (x, y, z)
+                        # Only print if the coordinates have changed significantly to reduce flicker
+                        if last_displayed_coords is None or np.linalg.norm(
+                                np.array(current_coords) - np.array(last_displayed_coords)) > 0.1:
+                            print(f"\r  -> Live Coordinates: ({x:8.2f}, {y:8.2f}, {z:8.2f})", end='', flush=True)
+                            last_displayed_coords = current_coords
+                    except queue.Empty:
+                        # No new data yet, just wait
+                        pass
+
+            finally:
+                # Stop the background thread
+                stop_event.set()
+                # reader_thread.join() # Not strictly necessary for daemon threads, but good practice
+
+            # --- Capture the final confirmed point ---
+            # After the loop, get the last confirmed data point
+            try:
+                # Flush any remaining data to get the most up-to-date reading
+                ser.reset_input_buffer()
+                time.sleep(0.1)  # Brief pause
+
+                # Read the next few lines to get a fresh, valid point
+                x, y, z = 0.0, 0.0, 0.0
+                for _ in range(10):  # Try a few times to get a good point
+                    line = ser.readline().decode('utf-8', errors='ignore').strip()
+                    if line.startswith('{'):
+                        try:
+                            data = json.loads(line)
+                            if 'x' in data and 'y' in data and 'z' in data:
+                                x, y, z = data['x'], data['y'], data['z']
+                                print(f"\n  -> Final Recorded Coordinates: ({x:8.2f}, {y:8.2f}, {z:8.2f})")
+                                break
+                        except json.JSONDecodeError:
+                            continue
+                else:
+                    # If loop completes without breaking, it means we failed to get a good point
+                    raise TimeoutError("Could not read a valid point after confirmation.")
+
+            except Exception as e:
+                print(f"\n  -> Error reading final position: {e}. Using (0, 0, 0).")
+                x, y, z = 0.0, 0.0, 0.0
+
+            # Store reference point
+            reference_points.append(ReferencePoint(
+                world_coords=(0, 0, 0),
+                arm_coords=(x, y, z),
+                joint_angles=(0, 0, 0, 0, 0, 0)
+            ))
+
+            if i < num_points - 1:  # Don't prompt after the last point
+                print("\nMove to the next position.")
+                input("Press Enter to continue...")
+
+    finally:
+        # Turn LED OFF when done with this arm
+        set_arm_led(ser, False)
+
+    return reference_points
+
+
+def read_serial_points(ser, min_distance=5.0, max_freq=30):
+    """
+    Read serial data and collect unique points until user stops.
+    Waits for user to press Enter to finish recording.
     """
     points = []
     last_point = None
     min_interval = 1.0 / max_freq if max_freq > 0 else 0
 
     print("Recording points...")
-    print("Press Ctrl+C to stop recording\n")
+    print("Move the arm around. Press Enter when finished.")
+
+    recording_finished = [False]  # Use a list to make it mutable inside nested function
+
+    def check_for_stop():
+        import select
+        return select.select([sys.stdin], [], [], 0) == ([sys.stdin], [], [])
 
     try:
-        while True:
-            if stop_condition and stop_condition():
-                break
-
+        while not recording_finished[0]:
             loop_start = time.time()
 
+            # Check for Enter key press
+            if check_for_stop():
+                sys.stdin.readline()
+                recording_finished[0] = True
+                break
+
             try:
-                x, y, z = read_serial_point(ser)
-                current_point = np.array([x, y, z])
+                line = ser.readline().decode('utf-8', errors='ignore').strip()
+                if line.startswith('{'):
+                    data = json.loads(line)
+                    if 'x' in data and 'y' in data and 'z' in data:
+                        x, y, z = data['x'], data['y'], data['z']
+                        current_point = np.array([x, y, z])
 
-                # Check distance from last point
-                if last_point is None or np.linalg.norm(current_point - last_point) >= min_distance:
-                    points.append((x, y, z))
-                    last_point = current_point
-                    print(f"\rPoints collected: {len(points)} - Last: ({x:.1f}, {y:.1f}, {z:.1f})", end='',
-                          flush=True)
-            except Exception:
-                pass  # Skip errors
+                        if last_point is None or np.linalg.norm(current_point - last_point) >= min_distance:
+                            points.append((x, y, z))
+                            last_point = current_point
+                            print(f"\rPoints collected: {len(points)} - Last: ({x:.1f}, {y:.1f}, {z:.1f})", end='',
+                                  flush=True)
+            except json.JSONDecodeError:
+                pass
 
-            # Enforce max frequency
             elapsed = time.time() - loop_start
             if elapsed < min_interval:
                 time.sleep(min_interval - elapsed)
 
-    except KeyboardInterrupt:
-        print("\nRecording stopped by user")
+    except Exception as e:
+        print(f"\nAn error occurred during recording: {e}")
 
     print(f"\nRecording complete. {len(points)} points collected.")
     return np.array(points)
 
-def collect_reference_points(ser, arm_name: str, num_points: int = 5) -> List[ReferencePoint]:
-    """
-    Collect reference points for arm calibration.
 
-    Args:
-        ser: Serial connection
-        arm_name: Name of the arm (for prompts)
-        num_points: Number of reference points to collect
-
-    Returns:
-        List of ReferencePoint objects
-    """
-    reference_points = []
-
-    print(f"\n=== {arm_name} Reference Point Collection ===")
-    print(f"Move the {arm_name.lower()} to {num_points} reference points in order:")
-    print("1. Sample origin (center of workspace)")
-    print("2. Front-right reference point")
-    print("3. Front-left reference point")
-    print("4. Back reference point")
-    print("5. Folded position (effector close to base)")
-
-    # Flush the serial buffer
-    ser.reset_input_buffer()
-    time.sleep(1)  # Wait for the buffer to clear
-
-    for i in range(num_points):
-        point_names = [
-            "Sample origin",
-            "Front-right reference",
-            "Front-left reference",
-            "Back reference",
-            "Folded position"
-        ]
-
-        print(f"\nPoint {i + 1}/{num_points}: {point_names[i]}")
-        print("Position the {arm_name} and press Enter when ready...".format(arm_name=arm_name))
-
-        # Continuously display current arm position
-        try:
-            while True:
-                line = ser.readline().decode('utf-8').strip()
-                if line.startswith('{'):
-                    data = json.loads(line)
-                    x, y, z = data['x'], data['y'], data['z']
-                    print(f"\rCurrent Coordinates: ({x:.2f}, {y:.2f}, {z:.2f})", end='', flush=True)
-
-                    # Check if the user has pressed Enter to confirm the position
-                    if sys.stdin in select([sys.stdin], [], [], 0)[0]:
-                        input()  # Consume the newline character
-                        break
-
-        except Exception as e:
-            print(f"Error parsing data: {e}")
-            x, y, z = (0.0, 0.0, 0.0)  # Default coordinates in case of error
-
-        # Store reference point
-        reference_points.append(ReferencePoint(
-            world_coords=(0, 0, 0),  # Will be set later
-            arm_coords=(x, y, z),
-            joint_angles=(0, 0, 0, 0, 0, 0)  # Simplified - could read joint angles
-        ))
-
-    return reference_points
-
-def collect_workspace_points(ser, arm_name: str) -> np.ndarray:
+def collect_workspace_points(ser: serial.Serial, arm_name: str) -> np.ndarray:
     """
     Collect workspace points by moving arm through range of motion.
-
-    Args:
-        ser: Serial connection
-        arm_name: Name of the arm (for prompts)
-
-    Returns:
-        Array of (x, y, z) points
     """
     print(f"\n=== {arm_name} Workspace Collection ===")
-    print(f"Move the {arm_name.lower()} through its full range of motion")
-    print("Try to cover all reachable positions")
-    print("Press Ctrl+C when done\n")
+    print(f"Move the {arm_name.lower()} through its full range of motion.")
+    print("Try to cover all reachable positions.")
 
-    points = read_serial_points(ser, min_distance=5.0, max_freq=30)
+    set_arm_led(ser, True)
+    try:
+        points = read_serial_points(ser, min_distance=5.0, max_freq=30)
+    finally:
+        set_arm_led(ser, False)
     return points
 
 
+# --- (Rest of the functions remain the same) ---
+
 def compute_transformation_matrices(left_refs: List[ReferencePoint],
                                     right_refs: List[ReferencePoint]) -> Dict[str, np.ndarray]:
-    """
-    Compute transformation matrices to map arms to common world space.
-
-    Args:
-        left_refs: Left arm reference points
-        right_refs: Right arm reference points
-
-    Returns:
-        Dictionary with transformation matrices
-    """
-    # Use first reference point (sample origin) to establish world coordinates
+    """Compute transformation matrices to map arms to common world space."""
     left_sample = np.array(left_refs[0].arm_coords)
     right_sample = np.array(right_refs[0].arm_coords)
-
-    # Compute approximate world origin (midpoint between arms at sample)
     world_origin = ((left_sample + right_sample) / 2).tolist()
 
-    # For this simplified implementation, we'll create identity transforms
-    # In practice, you'd compute actual transformation matrices using all reference points
-    transform_left = np.eye(4)  # Identity transform for now
-    transform_right = np.eye(4)  # Identity transform for now
+    transform_left = np.eye(4)
+    transform_right = np.eye(4)
 
     return {
         'left': transform_left,
         'right': transform_right,
         'world_origin': world_origin,
-        'sample_origin': left_refs[0].arm_coords  # Using left arm sample as origin
+        'sample_origin': left_refs[0].arm_coords
     }
 
 
 def compute_workspace_bounds(points: np.ndarray) -> Dict[str, float]:
-    """
-    Compute workspace bounds from collected points.
-
-    Args:
-        points: Array of (x, y, z) points
-
-    Returns:
-        Dictionary with min/max bounds
-    """
+    """Compute workspace bounds from collected points."""
     if len(points) == 0:
         return {'x_min': 0, 'x_max': 0, 'y_min': 0, 'y_max': 0, 'z_min': 0, 'z_max': 0}
 
@@ -263,33 +306,21 @@ def compute_workspace_bounds(points: np.ndarray) -> Dict[str, float]:
 
 def calibrate_dual_arm_workspace(left_port: str, right_port: str,
                                  output_file: str, num_ref_points: int = 5) -> bool:
-    """
-    Calibrate workspace for dual arm system.
-
-    Args:
-        left_port: Serial port for left arm
-        right_port: Serial port for right arm
-        output_file: Output filename
-        num_ref_points: Number of reference points to collect
-
-    Returns:
-        True if successful
-    """
+    """Calibrate workspace for dual arm system."""
     print("Starting dual arm workspace calibration...")
 
     left_ser = None
     right_ser = None
 
     try:
-        # Open serial connections
         print(f"Opening left arm port: {left_port}")
-        left_ser = serial.Serial(left_port, baudrate=115200, timeout=4)
+        left_ser = serial.Serial(left_port, baudrate=115200, timeout=2)
         left_ser.setRTS(False)
         left_ser.setDTR(False)
         time.sleep(2)
 
         print(f"Opening right arm port: {right_port}")
-        right_ser = serial.Serial(right_port, baudrate=115200, timeout=4)
+        right_ser = serial.Serial(right_port, baudrate=115200, timeout=2)
         right_ser.setRTS(False)
         right_ser.setDTR(False)
         time.sleep(2)
@@ -302,10 +333,8 @@ def calibrate_dual_arm_workspace(left_port: str, right_port: str,
         left_points = collect_workspace_points(left_ser, "Left Arm")
         right_points = collect_workspace_points(right_ser, "Right Arm")
 
-        # Compute transformations
+        # Compute transformations and bounds
         transforms = compute_transformation_matrices(left_refs, right_refs)
-
-        # Compute workspace bounds
         left_bounds = compute_workspace_bounds(left_points)
         right_bounds = compute_workspace_bounds(right_points)
 
@@ -347,14 +376,25 @@ def calibrate_dual_arm_workspace(left_port: str, right_port: str,
 
     except Exception as e:
         print(f"❌ Calibration failed: {e}")
+        import traceback
+        traceback.print_exc()
         return False
     finally:
-        # Clean up serial connections
         if left_ser and left_ser.is_open:
+            try:
+                set_arm_led(left_ser, False)
+            except:
+                pass
             left_ser.close()
         if right_ser and right_ser.is_open:
+            try:
+                set_arm_led(right_ser, False)
+            except:
+                pass
             right_ser.close()
 
+
+# --- Interactive Mode ---
 
 def interactive_calibration():
     """Interactive calibration routine"""
@@ -362,7 +402,6 @@ def interactive_calibration():
     print("Interactive Dual Arm Workspace Calibration")
     print("=" * 60)
 
-    # Get serial ports
     import serial.tools.list_ports
     ports = list(serial.tools.list_ports.comports())
 
@@ -374,50 +413,37 @@ def interactive_calibration():
     for i, port in enumerate(ports):
         print(f"  {i + 1}. {port.device} - {port.description}")
 
-    # Select left arm port
-    while True:
-        try:
-            choice = input(f"\nSelect LEFT arm port (1-{len(ports)}): ").strip()
-            port_index = int(choice) - 1
-            if 0 <= port_index < len(ports):
-                left_port = ports[port_index].device
-                break
-            else:
-                print("Invalid selection!")
-        except ValueError:
-            print("Please enter a valid number!")
+    def get_port_selection(prompt: str, other_port: str = None) -> str:
+        while True:
+            try:
+                choice = input(f"\n{prompt} (1-{len(ports)}): ").strip()
+                port_index = int(choice) - 1
+                if 0 <= port_index < len(ports):
+                    selected_port = ports[port_index].device
+                    if other_port and selected_port == other_port:
+                        print("Error: Cannot select the same port as the other arm!")
+                        continue
+                    return selected_port
+                else:
+                    print("Invalid selection!")
+            except ValueError:
+                print("Please enter a valid number!")
 
-    # Select right arm port
-    while True:
-        try:
-            choice = input(f"\nSelect RIGHT arm port (1-{len(ports)}): ").strip()
-            port_index = int(choice) - 1
-            if 0 <= port_index < len(ports) and ports[port_index].device != left_port:
-                right_port = ports[port_index].device
-                break
-            else:
-                print("Invalid selection or same as left arm!")
-        except ValueError:
-            print("Please enter a valid number!")
+    left_port = get_port_selection("Select LEFT arm port")
+    right_port = get_port_selection("Select RIGHT arm port", left_port)
 
-    # Get output filename
-    while True:
-        output_file = input("\nEnter output filename (e.g., dual_calibration.pkl, press Enter for default): ").strip()
-        if not output_file:
-            output_file = 'dual_calibration.pkl'
-        if not output_file.endswith('.pkl'):
-            output_file += '.pkl'
-        break
+    output_file = input("\nEnter output filename (e.g., dual_calibration.pkl, press Enter for default): ").strip()
+    if not output_file:
+        output_file = 'dual_calibration.pkl'
+    if not output_file.endswith('.pkl'):
+        output_file += '.pkl'
 
-
-    # Check if file exists
     if os.path.exists(output_file):
         response = input(f"File '{output_file}' exists. Overwrite? (y/N): ").strip().lower()
         if response not in ['y', 'yes']:
             print("Calibration cancelled.")
             return False
 
-    # Get number of reference points
     while True:
         try:
             num_points_input = input("Number of reference points (default: 5): ").strip()
@@ -447,18 +473,16 @@ def interactive_calibration():
 
     print("\nStarting calibration...")
     success = calibrate_dual_arm_workspace(left_port, right_port, output_file, num_ref_points)
-
     return success
 
 
+# --- Main Execution ---
+
 def main():
-    # Check if command line arguments are provided
     if len(sys.argv) == 1:
-        # No arguments provided - run interactive mode
         success = interactive_calibration()
         sys.exit(0 if success else 1)
     else:
-        # Arguments provided - run command line mode
         parser = argparse.ArgumentParser(
             description="Calibrate workspace for dual 5-DOF robotic arms",
             formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -468,21 +492,18 @@ Examples:
   python calibrate_workspace.py /dev/ttyUSB2 /dev/ttyUSB3 workspace.pkl --points 6
             """
         )
-
         parser.add_argument("left_port", help="Serial port for left arm (e.g., /dev/ttyUSB0)")
         parser.add_argument("right_port", help="Serial port for right arm (e.g., /dev/ttyUSB1)")
         parser.add_argument("output", help="Output file for calibration data (e.g., calibration.pkl)")
         parser.add_argument("--points", type=int, default=5, help="Number of reference points (default: 5)")
 
         args = parser.parse_args()
-
         success = calibrate_dual_arm_workspace(
             args.left_port,
             args.right_port,
             args.output,
             args.points
         )
-
         sys.exit(0 if success else 1)
 
 
