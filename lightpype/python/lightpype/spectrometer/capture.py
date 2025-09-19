@@ -11,10 +11,12 @@ print(os.environ)
 
 ##
 # # Set Qt environment variables if not already set
-# if 'QT_DEBUG_PLUGINS' not in os.environ:
-#     os.environ['QT_DEBUG_PLUGINS'] = '1'
-# if 'QT_QPA_PLATFORM_PLUGIN_PATH' not in os.environ:
-os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = '/usr/lib/aarch64-linux-gnu/qt5/plugins/platforms'
+if 'QT_DEBUG_PLUGINS' not in os.environ:
+    os.environ['QT_DEBUG_PLUGINS'] = '0'
+if 'QT_QPA_PLATFORM_PLUGIN_PATH' not in os.environ:
+    os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = '/usr/lib/aarch64-linux-gnu/qt5/plugins/platforms'
+
+# os.environ.update({"QT_QPA_PLATFORM_PLUGIN_PATH": "/usr/lib/aarch64-linux-gnu/qt5/plugins/xcbglintegrations/libqxcb-glx-integration.so"})
 
 import sys
 from PyQt5.QtWidgets import QApplication
