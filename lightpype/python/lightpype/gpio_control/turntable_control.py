@@ -1,4 +1,3 @@
-import RPi.GPIO as GPIO
 import asyncio
 import time
 from typing import Dict, List, Optional, Callable, Any, Union
@@ -7,6 +6,7 @@ from enum import Enum
 import threading
 import json
 import logging
+from gpiozero import OutputDevice, Device
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -66,16 +66,13 @@ class StepperMotorManager:
         self.task_lock = threading.Lock()
         self._state_stack: Dict[str, MotorTask] = {}
         self.initialized = False
+        self.motor_devices = {}  # Store gpiozero OutputDevice instances
 
         try:
-            # Initialize GPIO
-            GPIO.setmode(GPIO.BCM)
-            GPIO.setwarnings(False)
-
             # Load configuration
             self._load_config()
 
-            # Setup GPIO pins
+            # Setup GPIO pins using gpiozero
             self._setup_gpio()
             self.initialized = True
 
@@ -140,31 +137,33 @@ class StepperMotorManager:
             raise
 
     def _setup_gpio(self):
-        """Setup GPIO pins"""
+        """Setup GPIO pins using gpiozero"""
         # Setup motor pins
-        all_pins = list(self.motor_pins.values()) + self.enable_pins
-        for pin in all_pins:
+        for pin_name, pin_number in self.motor_pins.items():
             try:
-                GPIO.setup(pin, GPIO.OUT)
-                GPIO.output(pin, GPIO.LOW)
+                self.motor_devices[pin_name] = OutputDevice(pin_number)
+                self.motor_devices[pin_name].off()  # Initialize to LOW
             except Exception as e:
-                logger.error(f"Error setting up GPIO pin {pin}: {e}")
+                logger.error(f"Error setting up GPIO pin {pin_number}: {e}")
                 raise
 
-        # Set all enable pins high (if wired)
-        for en in self.enable_pins:
+        # Setup enable pins
+        for i, pin_number in enumerate(self.enable_pins):
             try:
-                GPIO.output(en, GPIO.HIGH)
+                pin_name = f"enable_{i}"
+                self.motor_devices[pin_name] = OutputDevice(pin_number)
+                self.motor_devices[pin_name].on()  # Set enable pins high (active low in many drivers)
             except Exception as e:
-                logger.error(f"Error setting enable pin {en}: {e}")
+                logger.error(f"Error setting up enable pin {pin_number}: {e}")
+                raise
 
     def set_step(self, a1: int, a2: int, b1: int, b2: int):
-        """Set the motor step"""
+        """Set the motor step using gpiozero"""
         try:
-            GPIO.output(self.in1, a1)
-            GPIO.output(self.in2, a2)
-            GPIO.output(self.in3, b1)
-            GPIO.output(self.in4, b2)
+            self.motor_devices['in1'].value = a1
+            self.motor_devices['in2'].value = a2
+            self.motor_devices['in3'].value = b1
+            self.motor_devices['in4'].value = b2
         except Exception as e:
             logger.error(f"Error setting motor step: {e}")
             raise
@@ -229,11 +228,14 @@ class StepperMotorManager:
         try:
             if self.initialized:
                 # Turn off all motor pins
-                for pin in [self.in1, self.in2, self.in3, self.in4]:
-                    GPIO.output(pin, GPIO.LOW)
-                for en in self.enable_pins:
-                    GPIO.output(en, GPIO.LOW)
-                GPIO.cleanup()
+                for pin_name, device in self.motor_devices.items():
+                    try:
+                        device.off()
+                        device.close()
+                    except Exception as e:
+                        logger.error(f"Error closing device {pin_name}: {e}")
+
+                self.motor_devices.clear()
                 self.initialized = False
                 logger.info("Motor GPIO cleaned up")
         except Exception as e:
