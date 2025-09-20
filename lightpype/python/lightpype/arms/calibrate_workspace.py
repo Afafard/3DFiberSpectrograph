@@ -259,6 +259,77 @@ def reset_arm_state(ser: serial.Serial) -> bool:
         return False
 
 
+def disable_esp_now_and_wifi(ser: serial.Serial, arm_name: str) -> bool:
+    """
+    🔥 CRITICAL FIX: Disable ESP-NOW and WiFi to force standalone mode.
+
+    The right arm is stuck in ESP-NOW follower mode, causing it to broadcast
+    static values instead of real-time sensor data. This function disables
+    all wireless communication protocols to force the arm into local control mode.
+
+    According to documentation:
+    - CMD_ESP_NOW_CONFIG with mode=0 disables ESP-NOW
+    - CMD_WIFI_ON_BOOT with cmd=3 disables WiFi on boot
+    """
+
+    print(f"🔥 Disabling ESP-NOW and WiFi on {arm_name} to force standalone mode...")
+
+    # Step 1: Disable ESP-NOW configuration (mode=0 = disabled)
+    cmd_esp_now = {"T": 301, "mode": 0, "dev": 0, "cmd": 0, "megs": 0}
+    print(f"Sending: {cmd_esp_now}")
+    resp1 = send_command(ser, cmd_esp_now)
+
+    # Step 2: Disable WiFi on boot
+    cmd_wifi_off = {"T": 401, "cmd": 3}  # CMD_WIFI_ON_BOOT with cmd=3 = disable
+    print(f"Sending: {cmd_wifi_off}")
+    resp2 = send_command(ser, cmd_wifi_off)
+
+    # Step 3: Clear any ESP-NOW followers (if any exist)
+    cmd_remove_all = {"T": 304, "mac": "FF:FF:FF:FF:FF:FF"}  # Remove all followers
+    print(f"Sending: {cmd_remove_all}")
+    resp3 = send_command(ser, cmd_remove_all)
+
+    # Step 4: Reboot to apply changes
+    cmd_reboot = {"T": 600}
+    print(f"Sending: {cmd_reboot}")
+    resp4 = send_command(ser, cmd_reboot)
+
+    # Wait for reboot
+    time.sleep(5)
+
+    if resp1 and resp2 and resp3 and resp4:
+        print(f"✅ {arm_name} ESP-NOW and WiFi disabled successfully")
+        return True
+    else:
+        print(f"⚠️  {arm_name} ESP-NOW disable failed — continuing anyway")
+        return False
+
+
+def send_reset_and_wait(ser: serial.Serial, arm_name: str) -> bool:
+    """
+    Comprehensive reset protocol that fixes both software and hardware communication issues.
+    """
+    print(f"🔄 Resetting {arm_name} with full communication cleanup...")
+
+    # First, disable ESP-NOW and WiFi (this is the critical fix)
+    disable_esp_now_and_wifi(ser, arm_name)
+
+    # Then do standard resets
+    reset_arm_state(ser)
+    time.sleep(1)
+
+    # Send a simple command to verify communication is restored
+    cmd = {"T": 602}  # Check boot mission status (should be empty now)
+    resp = send_command(ser, cmd)
+
+    if resp:
+        print(f"✅ {arm_name} communication verified after cleanup")
+        return True
+    else:
+        print(f"⚠️  {arm_name} communication still unstable - continuing")
+        return False
+
+
 # --- DATA STRUCTURES ---
 
 @dataclass
@@ -368,41 +439,73 @@ def collect_reference_points(ser: serial.Serial, arm_name: str, num_points: int 
 
 def read_status_continuously(ser: serial.Serial, data_queue: queue.Queue, stop_event: threading.Event):
     """Continuously read T:1051 messages from serial port and update latest state."""
+    last_valid_data = None
+    consecutive_invalid = 0
+
     while not stop_event.is_set():
         try:
             if ser.in_waiting > 0:
                 line = ser.readline().decode('utf-8', errors='ignore').strip()
                 if not line:
                     continue
-                if line.startswith('{') and line.endswith('}'):
-                    try:
-                        resp = json.loads(line)
-                        if "T" in resp and resp["T"] == 1051:
-                            # Extract position data
-                            x = float(resp.get("x", 0))
-                            y = float(resp.get("y", 0))
-                            z = float(resp.get("z", 0))
 
+                # Skip corrupted lines that don't have proper structure
+                if not (line.startswith('{') and line.endswith('}')):
+                    continue
+
+                try:
+                    resp = json.loads(line)
+
+                    # Validate that this is a T:1051 status message with expected fields
+                    if "T" in resp and resp["T"] == 1051:
+                        # Check if we have valid position data (not all zeros or extreme values)
+                        x = resp.get("x", 0)
+                        y = resp.get("y", 0)
+                        z = resp.get("z", 0)
+
+                        # Check for reasonable values (not NaN or extreme outliers)
+                        if all(isinstance(val, (int, float)) and abs(val) < 10000 for val in [x, y, z]):
                             # Extract joint angles from T:1051 fields
-                            b = float(resp.get("b", 0))
-                            s = float(resp.get("s", 0))
-                            e = float(resp.get("e", 0))
-                            t = float(resp.get("t", 0))
-                            r = float(resp.get("r", 0))
-                            g = float(resp.get("g", 0))
+                            b = resp.get("b", 0)
+                            s = resp.get("s", 0)
+                            e = resp.get("e", 0)
+                            t = resp.get("t", 0)
+                            r = resp.get("r", 0)
+                            g = resp.get("g", 0)
 
                             # Update latest state in queue
                             data = {
                                 'position': [x, y, z],
                                 'angles': (b, s, e, t, r, g)
                             }
+
+                            # Only update queue if data looks valid
                             try:
                                 data_queue.get_nowait()
                             except queue.Empty:
                                 pass
+
                             data_queue.put(data)
-                    except (json.JSONDecodeError, ValueError) as e:
+                            last_valid_data = data
+                            consecutive_invalid = 0
+                        else:
+                            # Data looks corrupted - increment counter
+                            consecutive_invalid += 1
+
+                    else:
+                        # Not a T:1051 message, ignore
                         continue
+
+                except (json.JSONDecodeError, ValueError) as e:
+                    consecutive_invalid += 1
+                    continue
+
+            # If we've had too many invalid readings, try to recover
+            if consecutive_invalid > 10:
+                print(f"⚠️  Too many invalid readings ({consecutive_invalid}) - attempting to recover...")
+                time.sleep(0.5)
+                consecutive_invalid = 0
+
             time.sleep(0.01)
         except Exception as e:
             print(f"⚠️ Status read error: {e}")
@@ -458,9 +561,50 @@ def collect_workspace_points(ser: serial.Serial, arm_name: str) -> np.ndarray:
     return np.array(points)
 
 
+def save_checkpoint(output_file: str, left_refs: List[ReferencePoint] = None, right_refs: List[ReferencePoint] = None,
+                    left_points: np.ndarray = None, right_points: np.ndarray = None) -> str:
+    """Save intermediate checkpoint with collected data so far."""
+    # Create a partial calibration object
+    checkpoint = {
+        'left_refs': [asdict(p) for p in left_refs] if left_refs else None,
+        'right_refs': [asdict(p) for p in right_refs] if right_refs else None,
+        'left_points': left_points.tolist() if left_points is not None else None,
+        'right_points': right_points.tolist() if right_points is not None else None,
+        'checkpoint_time': time.time()
+    }
+
+    # Save to checkpoint file
+    checkpoint_file = output_file.replace('.pkl', '_checkpoint.pkl')
+    with open(checkpoint_file, 'wb') as f:
+        pickle.dump(checkpoint, f)
+
+    print(f"💾 Checkpoint saved to: {checkpoint_file}")
+    return checkpoint_file
+
+
+def load_checkpoint(output_file: str) -> Dict[str, Any]:
+    """Load checkpoint data if it exists."""
+    checkpoint_file = output_file.replace('.pkl', '_checkpoint.pkl')
+    if os.path.exists(checkpoint_file):
+        print(f"🔍 Loading checkpoint from: {checkpoint_file}")
+        with open(checkpoint_file, 'rb') as f:
+            return pickle.load(f)
+    print("ℹ️  No checkpoint found")
+    return {}
+
+
+def delete_checkpoint(output_file: str):
+    """Remove checkpoint file after successful completion."""
+    checkpoint_file = output_file.replace('.pkl', '_checkpoint.pkl')
+    if os.path.exists(checkpoint_file):
+        os.remove(checkpoint_file)
+        print(f"🗑️  Deleted checkpoint file: {checkpoint_file}")
+
+
 def compute_transformation_matrices(left_refs: List[ReferencePoint], right_refs: List[ReferencePoint]) -> Dict[
     str, Any]:
-    """Compute rigid transformation matrices from arm coordinates to world coordinates using Kabsch algorithm.
+    """
+    Compute rigid transformation matrices from arm coordinates to world coordinates using Kabsch algorithm.
 
     We have 9 corresponding point pairs per arm: (arm_coords_i, world_coords_i)
 
@@ -487,6 +631,8 @@ def compute_transformation_matrices(left_refs: List[ReferencePoint], right_refs:
 
     def kabsch_algorithm(A, B):
         """
+        Kabsch algorithm for finding optimal rigid transformation between two sets of points.
+
         A: source points (arm coordinates), shape (n,3)
         B: target points (world coordinates), shape (n,3)
 
@@ -511,6 +657,7 @@ def compute_transformation_matrices(left_refs: List[ReferencePoint], right_refs:
 
         # Handle reflection (determinant should be +1)
         if np.linalg.det(R) < 0:
+            # Flip the sign of the third column of Vt
             Vt[-1, :] *= -1
             R = Vt.T @ U.T
 
@@ -523,7 +670,7 @@ def compute_transformation_matrices(left_refs: List[ReferencePoint], right_refs:
     R_left, T_left = kabsch_algorithm(left_arm_points, left_world_points)
     R_right, T_right = kabsch_algorithm(right_arm_points, right_world_points)
 
-    # Save transformation matrices
+    # Return transformation matrices in the format expected by WorkspaceCalibration
     return {
         'left': {'R': R_left, 'T': T_left},
         'right': {'R': R_right, 'T': T_right},
@@ -533,10 +680,19 @@ def compute_transformation_matrices(left_refs: List[ReferencePoint], right_refs:
 
 
 def compute_workspace_bounds(points: np.ndarray) -> Dict[str, float]:
-    """Compute axis-aligned bounds."""
+    """
+    Compute axis-aligned bounds for a set of 3D points.
+
+    Args:
+        points: numpy array of shape (n, 3) containing XYZ coordinates
+
+    Returns:
+        Dictionary with min/max bounds for each axis
+    """
     if len(points) == 0:
         return {'x_min': 0, 'x_max': 0, 'y_min': 0, 'y_max': 0, 'z_min': 0, 'z_max': 0}
 
+    # Compute min and max for each dimension
     x_min, y_min, z_min = np.min(points, axis=0)
     x_max, y_max, z_max = np.max(points, axis=0)
 
@@ -571,19 +727,58 @@ def calibrate_dual_arm_workspace(left_port: str, right_port: str,
 
         time.sleep(2)
 
-        # Reset both arms
-        reset_arm_state(left_ser)
-        reset_arm_state(right_ser)
-        time.sleep(3)  # Increased wait after reset
+        # 🔥 CRITICAL: Disable ESP-NOW and WiFi on BOTH arms before starting calibration
+        print("\n🔥 INITIALIZING COMMUNICATION CLEANUP...")
 
-        # Phase 1: Collect reference points
+        # Disable ESP-NOW on left arm
+        send_reset_and_wait(left_ser, "Left Arm")
+        time.sleep(1)
+
+        # Disable ESP-NOW on right arm (this fixes the static values issue!)
+        send_reset_and_wait(right_ser, "Right Arm")
+        time.sleep(3)  # Extra wait for both arms to fully reset
+
+        # Now check for checkpoint
+        checkpoint = load_checkpoint(output_file)
+
+        # Phase 1: Collect reference points - with checkpointing
         print("\n" + "=" * 60)
-        left_refs = collect_reference_points(left_ser, "Left Arm", num_ref_points)
-        right_refs = collect_reference_points(right_ser, "Right Arm", num_ref_points)
 
-        # Phase 2: Collect workspace points
-        left_points = collect_workspace_points(left_ser, "Left Arm")
-        right_points = collect_workspace_points(right_ser, "Right Arm")
+        # Check if left arm data already collected
+        if checkpoint.get('left_refs') is not None:
+            print("✅ Found saved left arm reference points - skipping collection")
+            left_refs = [ReferencePoint(**p) for p in checkpoint['left_refs']]
+        else:
+            print("Collecting left arm reference points...")
+            left_refs = collect_reference_points(left_ser, "Left Arm", num_ref_points)
+            save_checkpoint(output_file, left_refs=left_refs)  # Save after collecting left arm
+
+        # Check if right arm data already collected
+        if checkpoint.get('right_refs') is not None:
+            print("✅ Found saved right arm reference points - skipping collection")
+            right_refs = [ReferencePoint(**p) for p in checkpoint['right_refs']]
+        else:
+            print("Collecting right arm reference points...")
+            right_refs = collect_reference_points(right_ser, "Right Arm", num_ref_points)
+            save_checkpoint(output_file, left_refs=left_refs, right_refs=right_refs)  # Save after collecting both arms
+
+        # Phase 2: Collect workspace points - with checkpointing
+        if checkpoint.get('left_points') is not None:
+            print("✅ Found saved left arm workspace points - skipping collection")
+            left_points = np.array(checkpoint['left_points'])
+        else:
+            print("Collecting left arm workspace points...")
+            left_points = collect_workspace_points(left_ser, "Left Arm")
+            save_checkpoint(output_file, left_refs=left_refs, right_refs=right_refs, left_points=left_points)
+
+        if checkpoint.get('right_points') is not None:
+            print("✅ Found saved right arm workspace points - skipping collection")
+            right_points = np.array(checkpoint['right_points'])
+        else:
+            print("Collecting right arm workspace points...")
+            right_points = collect_workspace_points(right_ser, "Right Arm")
+            save_checkpoint(output_file, left_refs=left_refs, right_refs=right_refs, left_points=left_points,
+                            right_points=right_points)
 
         # Phase 3: Compute transformations and bounds
         transforms = compute_transformation_matrices(left_refs, right_refs)
@@ -620,6 +815,9 @@ def calibrate_dual_arm_workspace(left_port: str, right_port: str,
 
         with open(output_file, 'wb') as f:
             pickle.dump(calibration, f)
+
+        # Remove checkpoint file since full calibration completed
+        delete_checkpoint(output_file)
 
         print(f"\n✅ ✅ ✅ Calibration completed successfully!")
         print(f"📁 Saved to: {output_file}")
@@ -708,6 +906,20 @@ def interactive_calibration():
     if not output_file.endswith('.pkl'):
         output_file += '.pkl'
 
+    # Check for checkpoint BEFORE asking user
+    checkpoint_file = output_file.replace('.pkl', '_checkpoint.pkl')
+
+    if os.path.exists(checkpoint_file):
+        print(f"\n⚠️  Found incomplete calibration checkpoint: {checkpoint_file}")
+        resume = input("Do you want to resume from checkpoint? (y/N): ").strip().lower()
+        if resume not in ['y', 'yes']:
+            print("➡️  Continuing with fresh calibration...")
+            # Remove checkpoint file if user declined
+            os.remove(checkpoint_file)
+        else:
+            print("🔄 Resuming from checkpoint...")
+
+    # Now check if output file exists and ask about overwrite
     if os.path.exists(output_file):
         resp = input(f"⚠️  {output_file} exists. Overwrite? (y/N): ").strip().lower()
         if resp not in ['y', 'yes']:
