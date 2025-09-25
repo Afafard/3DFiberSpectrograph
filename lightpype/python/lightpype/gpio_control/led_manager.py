@@ -40,6 +40,7 @@ class LEDManager:
         self.config_file = config_file
         self.leds: Dict[str, LED] = {}
         self.led_tasks: Dict[str, asyncio.Task] = {}
+        self._running = False  # <-- New flag to control lifecycle
         self._load_config()
         self._initialize_leds()
         logger.info("LED Manager initialized")
@@ -83,11 +84,19 @@ class LEDManager:
 
         try:
             while True:
+                # Check if manager is still running — exit early if not
+                if not self._running:
+                    logger.debug(f"LED task for {color} exiting due to manager shutdown")
+                    break
+
                 # Check if task duration has expired
                 if duration and (time.time() - start_time) > duration:
                     break
 
-                # Execute based on state
+                # Execute based on state — only if manager is running
+                if not self._running:
+                    break
+
                 if state == LEDState.OFF:
                     led.off()
                     await asyncio.sleep(0.1)
@@ -100,6 +109,8 @@ class LEDManager:
                     # Blink with specified frequency
                     led.on()
                     await asyncio.sleep(1.0 / (frequency * 2))
+                    if not self._running:
+                        break
                     led.off()
                     await asyncio.sleep(1.0 / (frequency * 2))
 
@@ -107,12 +118,15 @@ class LEDManager:
                     # Simple pulse effect
                     led.on()
                     await asyncio.sleep(0.2)
+                    if not self._running:
+                        break
                     led.off()
                     await asyncio.sleep(0.2)
 
         except asyncio.CancelledError:
-            # Task was cancelled, ensure LED is off
-            led.off()
+            # Only attempt to turn off if still running
+            if self._running:
+                led.off()
             logger.info(f"LED task for {color} cancelled")
             raise
 
@@ -180,12 +194,31 @@ class LEDManager:
 
     def cleanup(self):
         """Clean up all LED tasks"""
+        # Set flag to stop all tasks from accessing GPIO
+        self._running = False
+
         # Cancel all active tasks
         for task in self.led_tasks.values():
             task.cancel()
 
-        # Turn off all LEDs
-        for led in self.leds.values():
-            led.off()
+        # Wait a moment to let tasks exit gracefully
+        if self.led_tasks:
+            asyncio.run_coroutine_threadsafe(
+                asyncio.gather(*self.led_tasks.values(), return_exceptions=True),
+                asyncio.get_event_loop()
+            )
+            time.sleep(0.1)  # Brief pause to allow cleanup
 
+        # Now it's safe to turn off LEDs — they won't be accessed by tasks anymore
+        for led in self.leds.values():
+            try:
+                led.off()
+            except Exception as e:
+                logger.warning(f"Failed to turn off LED: {e}")
+
+        self.led_tasks.clear()
         logger.info("LED Manager cleaned up")
+
+    def start(self):
+        """Start the LED manager (call this after initialization)"""
+        self._running = True
