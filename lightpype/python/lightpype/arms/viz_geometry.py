@@ -253,14 +253,12 @@ def plot_arm_model(ax, arm_model, color='blue', alpha=1.0):
                 linewidth=6,
                 alpha=alpha)
 
-
     # Draw joints as spheres
     for i, point in enumerate(segments):
         base_color = 'darkblue' if color == 'blue' else 'darkviolet'
         ax.scatter(point[0], point[1], point[2],
                    color=base_color if i == 0 else color,
                    s=50, alpha=alpha)
-
 
     # Draw end effector
     end_effector = segments[-1]
@@ -396,41 +394,51 @@ def plot_3d_setup():
     left_arm_model = ArmKinematicsModel("left", (LEFT_ARM_X, 0, ARM_MOUNT_HEIGHT))
     right_arm_model = ArmKinematicsModel("right", (RIGHT_ARM_X, 0, ARM_MOUNT_HEIGHT))
 
-    # Set default joint angles for visualization
-    left_arm_model.set_joint_angles([0, np.pi / 6, np.pi / 3, -np.pi / 4, 0])
-    right_arm_model.set_joint_angles([0, -np.pi / 6, -np.pi / 3, np.pi / 4, 0])
+    # Set neutral joint angles: both arms folded vertically over sample center
+    # Left arm (X=-374.6): must reach to (0,0,57.15)
+    # Joint angles: base=0°, shoulder=-90° (down), elbow=+90° (fold back), wrist1=-90° (point down)
+    left_arm_model.set_joint_angles([0, -np.pi/2, np.pi/2, -np.pi/2, 0])
+
+    # Right arm (X=+374.6): must reach to (0,0,57.15)
+    # Same joint configuration — symmetric inward fold
+    right_arm_model.set_joint_angles([0, -np.pi/2, np.pi/2, -np.pi/2, 0])
 
     # Plot arm models
     plot_arm_model(ax, left_arm_model, 'blue', 0.8)
     plot_arm_model(ax, right_arm_model, 'purple', 0.8)
 
-    # Draw arm reach zones (corrected orientation - facing inward)
-    # Left arm reach zone (facing right/inward)
-    left_theta = np.linspace(-np.pi / 2, np.pi / 2, 30)  # Facing right direction
-    left_phi = np.linspace(0, np.pi, 20)
-    left_theta_grid, left_phi_grid = np.meshgrid(left_theta, left_phi)
+    # Draw arm reach zones — now tight vertical cylinders over sample
+    # Left arm: cone centered at (0, 0, 57.15), pointing downward
+    center_x = 0
+    center_y = 0
+    center_z = TURN_TABLE_HEIGHT
 
-    left_x = left_arm_model.base_position[0] + 500 * np.sin(left_phi_grid) * np.cos(left_theta_grid)
-    left_y = left_arm_model.base_position[1] + 500 * np.sin(left_phi_grid) * np.sin(left_theta_grid)
-    left_z = left_arm_model.base_position[2] + 500 * np.cos(left_phi_grid)
+    # Cone centered above sample, pointing down — radius 100mm max
+    r_max = 120  # mm (conservative reach radius from center)
+    h_max = 150  # mm (max vertical drop from arm base)
 
-    ax.plot_surface(left_x, left_y, left_z, alpha=0.15, color='blue')
+    theta = np.linspace(0, 2*np.pi, 30)
+    phi = np.linspace(np.pi/2, np.pi, 15)  # Only downward hemisphere
 
-    # Right arm reach zone (facing left/inward)
-    right_theta = np.linspace(np.pi / 2, 3 * np.pi / 2, 30)  # Facing left direction
-    right_phi = np.linspace(0, np.pi, 20)
-    right_theta_grid, right_phi_grid = np.meshgrid(right_theta, right_phi)
+    # Left arm cone: centered at sample, origin offset by base position
+    left_base_x = LEFT_ARM_X
+    # Map cone in local space centered at (0,0,THT)
+    X = np.outer(np.cos(theta), np.sin(phi)) * r_max
+    Y = np.outer(np.sin(theta), np.sin(phi)) * r_max
+    Z = np.outer(np.ones_like(theta), np.cos(phi)) * h_max
 
-    right_x = right_arm_model.base_position[0] + 500 * np.sin(right_phi_grid) * np.cos(right_theta_grid)
-    right_y = right_arm_model.base_position[1] + 500 * np.sin(right_phi_grid) * np.sin(right_theta_grid)
-    right_z = right_arm_model.base_position[2] + 500 * np.cos(right_phi_grid)
+    # Shift cone to be centered on sample, then offset base position
+    X = center_x + X
+    Y = center_y + Y
+    Z = center_z + Z - h_max  # Start from base height down
 
-    ax.plot_surface(right_x, right_y, right_z, alpha=0.15, color='purple')
+    ax.plot_surface(X, Y, Z, alpha=0.12, color='blue', shade=True)
+
+    # Right arm cone — identical
+    ax.plot_surface(X, Y, Z, alpha=0.12, color='purple', shade=True)
 
     # Connect arm bases to vertical supports
-    # Left arm connection to vertical support
     ax.plot([LEFT_ARM_X, LEFT_ARM_X], [0, 0], [ARM_MOUNT_HEIGHT, ARM_MOUNT_HEIGHT + 50], 'darkgray', linewidth=3)
-    # Right arm connection to vertical support
     ax.plot([RIGHT_ARM_X, RIGHT_ARM_X], [0, 0], [ARM_MOUNT_HEIGHT, ARM_MOUNT_HEIGHT + 50], 'darkgray', linewidth=3)
 
     # Set labels and title
@@ -509,6 +517,6 @@ if __name__ == "__main__":
     print("Blue/orange pyramids: Spectrometer/illuminator fiber optics")
     print("Blue numbered points: Shared reference points (both arms can reach)")
     print("Red filled circle: Turntable center (world origin)")
-    print("Green/purple transparent surfaces: Arm reach zones (facing inward)")
+    print("Blue/purple transparent surfaces: Arm reach zones (focused vertically over sample)")
     print("Brown beams: Cross beams connecting vertical supports")
     print("Dark gray bars: Horizontal structural supports at arm mounting height")
