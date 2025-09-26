@@ -1,179 +1,170 @@
-import requests
 import json
-import serial
 import time
-from typing import Dict, Any, Union, Optional
-import math
+from typing import Dict, Any, Optional, Union
+from enum import Enum
 
 
-class RoArmController:
-    def __init__(self, connection_type: str = "auto", http_ip: str = "192.168.1.255",
-                 serial_port: str = "/dev/ttyUSB0", baudrate: int = 115200):
+class Joint(Enum):
+    BASE = 1
+    SHOULDER = 2
+    ELBOW = 3
+    WRIST = 4
+    ROLL = 5
+    EOAT = 6
+
+
+class Axis(Enum):
+    X = 1
+    Y = 2
+    Z = 3
+    T = 4  # Pitch
+    R = 5  # Roll
+    G = 6  # Gripper (angle)
+
+
+class MovementMode(Enum):
+    ANGLE = 0
+    CARTESIAN = 1
+
+
+class CommandCode(Enum):
+    # Movement Control
+    MOVE_INIT = 100
+    SINGLE_JOINT_RAD = 101
+    JOINTS_RAD_CTRL = 102
+    SINGLE_AXIS_CTRL = 103
+    XYZT_GOAL_CTRL = 104
+    SERVO_RAD_FEEDBACK = 105
+    EOAT_HAND_CTRL = 106
+    SINGLE_JOINT_ANGLE = 121
+    JOINTS_ANGLE_CTRL = 122
+    CONSTANT_CTRL = 123
+
+    # Delay & Misc
+    DELAY_MILLIS = 111
+
+    # EOAT Torque
+    EOAT_GRAB_TORQUE = 107
+
+    # Reboot & Reset
+    REBOOT = 600
+    RESET_PID = 109
+
+    # WiFi (optional)
+    WIFI_ON_BOOT = 401
+    SET_AP = 402
+    SET_STA = 403
+
+    # Feedback Response (read-only)
+    FEEDBACK_RESPONSE = 1051
+
+
+class RoArmM3:
+    """
+    Python interface for RoArm-M3-S robotic arm control via JSON commands.
+    Supports serial or TCP/IP transport (extendable).
+    """
+
+    def __init__(self, transport):
         """
-        Initialize the RoArm controller using T-code commands.
-
-        Args:
-            connection_type: "http", "serial", or "auto" (default)
-            http_ip: IP address for HTTP connection
-            serial_port: Serial port for USB connection
-            baudrate: Baud rate for serial communication
+        Initialize with a transport object (e.g., Serial or socket).
+        Transport must implement: send(data: str) -> None and recv() -> str
         """
-        self.connection_type = connection_type
-        self.http_ip = http_ip
-        self.serial_port = serial_port
-        self.baudrate = baudrate
-        self.serial_conn = None
-        self.http_url = f"http://{http_ip}/cmd"
-        self.http_headers = {"Content-Type": "application/json"}
+        self.transport = transport
 
-        if connection_type == "serial":
-            self._connect_serial()
-        elif connection_type == "http":
-            # Test HTTP connection
-            try:
-                response = requests.get(f"http://{http_ip}", timeout=2)
-                if response.status_code != 200:
-                    raise ConnectionError("HTTP connection failed")
-            except requests.RequestException:
-                raise ConnectionError("Could not connect to robot via HTTP")
+    def _send_command(self, cmd: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Send JSON command and wait for response (if blocking)."""
+        json_cmd = json.dumps(cmd)
+        self.transport.send(json_cmd + "\n")
+        time.sleep(0.05)  # Small delay for command processing
 
-    def _connect_serial(self):
-        """Establish serial connection."""
-        try:
-            self.serial_conn = serial.Serial(
-                self.serial_port,
-                self.baudrate,
-                timeout=2
-            )
-            time.sleep(2)  # Wait for connection to establish
-            # Flush input buffer
-            self.serial_conn.flushInput()
-        except serial.SerialException as e:
-            raise ConnectionError(f"Serial connection failed: {e}")
-
-    def _send_command_serial(self, command: Dict[str, Any]) -> Dict[str, Any]:
-        """Send command via serial connection."""
-        if not self.serial_conn or not self.serial_conn.is_open:
-            self._connect_serial()
-
-        try:
-            # Flush input buffer before sending
-            self.serial_conn.flushInput()
-
-            # Send command
-            json_cmd = json.dumps(command) + '\n'
-            print(f"Sending command: {json_cmd.strip()}")
-            self.serial_conn.write(json_cmd.encode())
-
-            # Give time for processing
-            time.sleep(0.1)
-
-            # Read response
-            response_lines = []
-            start_time = time.time()
-
-            while time.time() - start_time < 2:  # 2 second timeout
-                if self.serial_conn.in_waiting > 0:
-                    line = self.serial_conn.readline().decode().strip()
-                    if line:
-                        response_lines.append(line)
-                        # If we got a proper response, break
-                        if line.startswith('{') and 'T' in line:
-                            break
-                time.sleep(0.01)
-
-            if not response_lines:
-                return {"status": "error", "error": {"code": 106, "message": "No response from device"}}
-
-            response = response_lines[0]  # Take first response
-            print(f"Raw response: {response}")
-
-            # Try to parse response
+        if cmd["T"] in {CommandCode.SERVO_RAD_FEEDBACK.value}:
+            # These commands return data
+            response = self.transport.recv()
             try:
                 return json.loads(response)
             except json.JSONDecodeError:
-                return {"status": "success", "raw": response}
+                print(f"Warning: Invalid JSON response: {response}")
+                return None
+        else:
+            # Non-feedback commands may not respond, or response is ignored
+            return None
 
-        except Exception as e:
-            return {"status": "error", "error": {"code": 106, "message": f"Communication error: {str(e)}"}}
+    def reset(self):
+        """Move robotic arm to initial position (CMD_MOVE_INIT)."""
+        self._send_command({"T": CommandCode.MOVE_INIT.value})
 
-    def _send_command_http(self, command: Dict[str, Any]) -> Dict[str, Any]:
-        """Send command via HTTP connection."""
-        try:
-            print(f"Sending HTTP command: {command}")
-            response = requests.post(
-                self.http_url,
-                data=json.dumps(command),
-                headers=self.http_headers,
-                timeout=5
-            )
+    def reboot(self):
+        """Reboot the robotic arm controller."""
+        self._send_command({"T": CommandCode.REBOOT.value})
 
-            # Check if response contains valid JSON
-            response_text = response.text.strip()
-            print(f"Raw HTTP response: {response_text}")
+    def move_to_initial(self):
+        """Alias for reset()."""
+        self.reset()
 
-            if not response_text:
-                return {"status": "error", "error": {"code": 106, "message": "Empty response from device"}}
-
-            # Try to parse as JSON first
-            try:
-                result = response.json()
-                return result
-            except json.JSONDecodeError:
-                # If JSON parsing fails, return raw response
-                return {"status": "success", "raw": response_text}
-
-        except requests.RequestException as e:
-            return {"status": "error", "error": {"code": 106, "message": f"HTTP request failed: {str(e)}"}}
-
-    def send_command(self, command: Dict[str, Any]) -> Dict[str, Any]:
+    # --- Single Joint Control (Radian) ---
+    def move_joint_rad(self, joint: Union[Joint, int], rad: float, spd: int = 0, acc: int = 10):
         """
-        Send a T-code command to the robotic arm.
-
-        Args:
-            command: Dictionary containing the T-code command
-
-        Returns:
-            Response dictionary from the arm
+        Move a single joint by radians.
+        joint: Joint enum or int (1-6)
+        rad: angle in radians
+        spd: speed in steps/s (0 = max)
+        acc: acceleration (0-254, unit=100 steps/s²)
         """
-        if self.connection_type == "serial":
-            return self._send_command_serial(command)
-        elif self.connection_type == "http":
-            return self._send_command_http(command)
-        else:  # auto mode
-            # Try HTTP first, fallback to serial
-            try:
-                result = self._send_command_http(command)
-                if result.get("status") != "error":
-                    return result
-            except:
-                pass
+        if isinstance(joint, Joint):
+            joint = joint.value
 
-            return self._send_command_serial(command)
+        # Validate joint
+        if not (1 <= joint <= 6):
+            raise ValueError("Joint must be between 1 and 6")
 
-    # Basic Movement Commands
-    def reset(self) -> Dict[str, Any]:
-        """Move arm to initial position."""
-        command = {"T": 100}
-        return self.send_command(command)
+        # Validate rad range (based on manual)
+        rad_ranges = {
+            1: (-3.14, 3.14),     # BASE
+            2: (-1.57, 1.57),     # SHOULDER
+            3: (-1.11, 3.14),     # ELBOW
+            4: (-1.57, 1.57),     # WRIST
+            5: (-3.14, 3.14),     # ROLL
+            6: (1.08, 3.14),      # EOAT
+        }
+        min_rad, max_rad = rad_ranges[joint]
+        if not (min_rad <= rad <= max_rad):
+            raise ValueError(f"rad for joint {joint} must be in [{min_rad}, {max_rad}]")
 
-    def move_single_joint_radians(self, joint: int, rad: float, spd: int = 0, acc: int = 10) -> Dict[str, Any]:
-        """Move single joint using radians."""
-        command = {
-            "T": 101,
+        self._send_command({
+            "T": CommandCode.SINGLE_JOINT_RAD.value,
             "joint": joint,
             "rad": rad,
             "spd": spd,
             "acc": acc
-        }
-        return self.send_command(command)
+        })
 
-    def move_all_joints_radians(self, base: float = 0, shoulder: float = 0, elbow: float = 1.57,
-                                wrist: float = 0, roll: float = 0, hand: float = 1.57,
-                                spd: int = 0, acc: int = 10) -> Dict[str, Any]:
-        """Move all joints using radians."""
-        command = {
-            "T": 102,
+    # --- All Joints Control (Radian) ---
+    def move_joints_rad(self, base: float = 0.0, shoulder: float = 0.0, elbow: float = 1.57,
+                        wrist: float = 0.0, roll: float = 0.0, hand: float = 1.57,
+                        spd: int = 0, acc: int = 10):
+        """
+        Move all joints simultaneously in radians.
+        Default positions are near home (elbow at 90°, gripper closed).
+        """
+        # Validate ranges
+        rad_ranges = {
+            "base": (-3.14, 3.14),
+            "shoulder": (-1.57, 1.57),
+            "elbow": (-1.11, 3.14),
+            "wrist": (-1.57, 1.57),
+            "roll": (-3.14, 3.14),
+            "hand": (1.08, 3.14)
+        }
+
+        for name, val in [("base", base), ("shoulder", shoulder), ("elbow", elbow),
+                          ("wrist", wrist), ("roll", roll), ("hand", hand)]:
+            min_r, max_r = rad_ranges[name]
+            if not (min_r <= val <= max_r):
+                raise ValueError(f"{name} radian value {val} out of range [{min_r}, {max_r}]")
+
+        self._send_command({
+            "T": CommandCode.JOINTS_RAD_CTRL.value,
             "base": base,
             "shoulder": shoulder,
             "elbow": elbow,
@@ -182,178 +173,211 @@ class RoArmController:
             "hand": hand,
             "spd": spd,
             "acc": acc
-        }
-        return self.send_command(command)
+        })
 
-    def move_gripper_radians(self, cmd: float, spd: int = 0, acc: int = 0) -> Dict[str, Any]:
-        """Move gripper/wrist joint using radians."""
-        command = {
-            "T": 106,
-            "cmd": cmd,
+    # --- Gripper Only (Radian) ---
+    def set_gripper_rad(self, rad: float, spd: int = 0, acc: int = 10):
+        """
+        Control gripper (EOAT) joint independently.
+        rad: 3.14 = closed, 1.08 = fully open
+        """
+        if not (1.08 <= rad <= 3.14):
+            raise ValueError("Gripper angle must be between 1.08 and 3.14 radians")
+
+        self._send_command({
+            "T": CommandCode.EOAT_HAND_CTRL.value,
+            "cmd": rad,
             "spd": spd,
             "acc": acc
-        }
-        return self.send_command(command)
+        })
 
-    def move_single_joint_degrees(self, joint: int, angle: float, spd: int = 10, acc: int = 10) -> Dict[str, Any]:
-        """Move single joint using degrees."""
-        command = {
-            "T": 121,
+    # --- Single Joint Control (Angle System) ---
+    def move_joint_angle(self, joint: Union[Joint, int], angle_deg: float, spd: int = 10, acc: int = 10):
+        """
+        Move a single joint by degrees (angle system).
+        Use this if you prefer degrees over radians.
+        """
+        if isinstance(joint, Joint):
+            joint = joint.value
+
+        if not (1 <= joint <= 6):
+            raise ValueError("Joint must be between 1 and 6")
+
+        angle_ranges = {
+            1: (-180, 180),   # BASE
+            2: (-90, 90),     # SHOULDER
+            3: (-45, 180),    # ELBOW
+            4: (-90, 90),     # WRIST
+            5: (-180, 180),   # ROLL
+            6: (45, 180),     # EOAT
+        }
+        min_a, max_a = angle_ranges[joint]
+        if not (min_a <= angle_deg <= max_a):
+            raise ValueError(f"angle for joint {joint} must be in [{min_a}, {max_a}]°")
+
+        self._send_command({
+            "T": CommandCode.SINGLE_JOINT_ANGLE.value,
             "joint": joint,
-            "angle": angle,
+            "angle": angle_deg,
             "spd": spd,
             "acc": acc
-        }
-        return self.send_command(command)
+        })
 
-    def move_all_joints_degrees(self, b: float = 0, s: float = 0, e: float = 90,
-                                t: float = 0, r: float = 0, h: float = 180,
-                                spd: int = 10, acc: int = 10) -> Dict[str, Any]:
-        """Move all joints using degrees."""
-        command = {
-            "T": 122,
-            "b": b,
-            "s": s,
-            "e": e,
-            "t": t,
-            "r": r,
-            "h": h,
-            "spd": spd,
-            "acc": acc
+    # --- All Joints Control (Angle System) ---
+    def move_joints_angle(self, b: float = 0.0, s: float = 0.0, e: float = 90.0,
+                          t: float = 0.0, r: float = 0.0, h: float = 180.0,
+                          spd: int = 10, acc: int = 10):
+        """
+        Move all joints using angle system (degrees).
+        Default: home position.
+        """
+        ranges = {
+            "b": (-180, 180),
+            "s": (-90, 90),
+            "e": (-45, 180),
+            "t": (-90, 90),
+            "r": (-180, 180),
+            "h": (45, 180)
         }
-        return self.send_command(command)
 
-    # Cartesian Coordinate Commands
-    def move_single_axis(self, axis: int, pos: float, spd: float = 0.25) -> Dict[str, Any]:
-        """Move single axis (Inverse Kinematics)."""
-        command = {
-            "T": 103,
+        for name, val in [("b", b), ("s", s), ("e", e), ("t", t), ("r", r), ("h", h)]:
+            min_a, max_a = ranges[name]
+            if not (min_a <= val <= max_a):
+                raise ValueError(f"{name} angle must be in [{min_a}, {max_a}]°")
+
+        self._send_command({
+            "T": CommandCode.JOINTS_ANGLE_CTRL.value,
+            "b": b, "s": s, "e": e, "t": t, "r": r, "h": h,
+            "spd": spd, "acc": acc
+        })
+
+    # --- Cartesian Control (Inverse Kinematics) ---
+    def move_to_xyz(self, x: float = 0.0, y: float = 0.0, z: float = 0.0,
+                    t: float = 0.0, r: float = 0.0, g: float = 3.14,
+                    spd: float = 0.25):
+        """
+        Move end-effector to absolute XYZT position (blocking).
+        Units: mm for x,y,z; radians for t,r,g.
+        """
+        self._send_command({
+            "T": CommandCode.XYZT_GOAL_CTRL.value,
+            "x": x, "y": y, "z": z, "t": t, "r": r, "g": g, "spd": spd
+        })
+
+    def move_to_xyz_fast(self, x: float = 0.0, y: float = 0.0, z: float = 0.0,
+                         t: float = 0.0, r: float = 0.0, g: float = 3.14):
+        """
+        Non-blocking Cartesian move (fastest speed, no interpolation).
+        Use for rapid sequential commands.
+        """
+        self._send_command({
+            "T": CommandCode.XYZT_DIRECT_CTRL.value,
+            "x": x, "y": y, "z": z, "t": t, "r": r, "g": g
+        })
+
+    def move_axis(self, axis: Union[Axis, int], pos: float, spd: float = 0.25):
+        """
+        Move a single axis (X,Y,Z,T,R,G) using inverse kinematics.
+        Useful for fine adjustments.
+        """
+        if isinstance(axis, Axis):
+            axis = axis.value
+        if not (1 <= axis <= 6):
+            raise ValueError("Axis must be 1-6")
+
+        self._send_command({
+            "T": CommandCode.SINGLE_AXIS_CTRL.value,
             "axis": axis,
             "pos": pos,
             "spd": spd
-        }
-        return self.send_command(command)
+        })
 
-    def move_to_position(self, x: float, y: float, z: float,
-                         t: float = 0, r: float = 0, g: float = 3.14,
-                         spd: float = 0.25) -> Dict[str, Any]:
-        """Move to Cartesian position (Inverse Kinematics)."""
-        command = {
-            "T": 104,
-            "x": x,
-            "y": y,
-            "z": z,
-            "t": t,
-            "r": r,
-            "g": g,
-            "spd": spd
-        }
-        return self.send_command(command)
+    # --- Continuous Movement ---
+    def continuous_move(self, mode: MovementMode, axis: Union[Axis, Joint, int], cmd: int, spd: int = 5):
+        """
+        Start continuous movement.
+        mode: MovementMode.ANGLE or CARTESIAN
+        axis: Joint (1-6) for angle mode, Axis (1-6) for cartesian
+        cmd: 0=STOP, 1=INCREASE, 2=DECREASE
+        spd: speed coefficient (0-20 recommended)
+        """
+        if isinstance(axis, Joint):
+            axis = axis.value
+        elif isinstance(axis, Axis):
+            axis = axis.value
 
-    def move_to_position_direct(self, x: float, y: float, z: float,
-                                t: float = 0, r: float = 0, g: float = 3.14) -> Dict[str, Any]:
-        """Move to Cartesian position directly (no interpolation)."""
-        command = {
-            "T": 1041,
-            "x": x,
-            "y": y,
-            "z": z,
-            "t": t,
-            "r": r,
-            "g": g
-        }
-        return self.send_command(command)
+        if not (1 <= axis <= 6):
+            raise ValueError("Axis must be between 1 and 6")
+        if cmd not in (0, 1, 2):
+            raise ValueError("cmd must be 0 (STOP), 1 (INCREASE), or 2 (DECREASE)")
 
-    # Feedback Commands
-    def get_status(self) -> Dict[str, Any]:
-        """Get current status including coordinates and joint angles."""
-        command = {"T": 105}
-        return self.send_command(command)
-
-    # Continuous Movement Commands
-    def continuous_move(self, m: int, axis: int, cmd: int, spd: int = 0) -> Dict[str, Any]:
-        """Continuous movement control."""
-        command = {
-            "T": 123,
-            "m": m,
+        self._send_command({
+            "T": CommandCode.CONSTANT_CTRL.value,
+            "m": mode.value,
             "axis": axis,
             "cmd": cmd,
             "spd": spd
-        }
-        return self.send_command(command)
+        })
 
-    # Convenience Methods
-    def move_joint(self, joint_id: int, angle: float, speed: int = 10) -> Dict[str, Any]:
-        """Convenience method to move a joint by ID (1-6) to angle in degrees."""
-        # Map joint IDs to the expected format
-        joint_mapping = {
-            1: 1,  # BASE_JOINT
-            2: 2,  # SHOULDER_JOINT
-            3: 3,  # ELBOW_JOINT
-            4: 4,  # WRIST_JOINT
-            5: 5,  # ROLL_JOINT
-            6: 6  # EOAT_JOINT (gripper)
-        }
+    # --- Get Feedback ---
+    def get_feedback(self) -> Optional[Dict[str, Any]]:
+        """
+        Request current state: joint angles, end-effector position, and load.
+        Returns a dict with keys:
+          x,y,z,tit,b,s,e,t,r,g (positions in radians)
+          tB,tS,tE,tT,tR (loads on joints)
+        """
+        response = self._send_command({"T": CommandCode.SERVO_RAD_FEEDBACK.value})
+        return response
 
-        if joint_id not in joint_mapping:
-            return {"status": "error", "error": {"code": 101, "message": "Invalid joint ID"}}
+    # --- Gripper Torque ---
+    def set_gripper_torque(self, torque: int = 200):
+        """
+        Set gripper grab torque (0-255).
+        Higher = stronger grip.
+        """
+        if not (0 <= torque <= 255):
+            raise ValueError("Torque must be between 0 and 255")
+        self._send_command({
+            "T": CommandCode.EOAT_GRAB_TORQUE.value,
+            "tor": torque
+        })
 
-        return self.move_single_joint_degrees(joint_mapping[joint_id], angle, speed)
+    # --- Delay ---
+    def delay_ms(self, ms: int):
+        """
+        Insert a delay in milliseconds (blocks command stream).
+        Useful for synchronizing actions.
+        """
+        if ms < 0:
+            raise ValueError("Delay must be non-negative")
+        self._send_command({
+            "T": CommandCode.DELAY_MILLIS.value,
+            "cmd": ms
+        })
 
-    def open_gripper(self, speed: int = 10) -> Dict[str, Any]:
-        """Open gripper (decrease angle)."""
-        # For gripper, decreasing angle opens it (from 180° to ~45°)
-        return self.move_single_joint_degrees(6, 45, speed)
+    # --- Reset PID ---
+    def reset_pid(self):
+        """Reset all joint PID parameters to default."""
+        self._send_command({"T": CommandCode.RESET_PID.value})
 
-    def close_gripper(self, speed: int = 10) -> Dict[str, Any]:
-        """Close gripper (increase angle to ~180°)."""
-        return self.move_single_joint_degrees(6, 180, speed)
+    # --- WiFi Commands (Optional) ---
+    def set_wifi_ap(self, ssid: str = "RoArm-M3", password: str = "12345678"):
+        """Set WiFi as Access Point."""
+        self._send_command({
+            "T": CommandCode.SET_AP.value,
+            "ssid": ssid,
+            "password": password
+        })
 
-    # Connection Management
-    def close(self):
-        """Close serial connection if open."""
-        if self.serial_conn and self.serial_conn.is_open:
-            self.serial_conn.close()
+    def set_wifi_sta(self, ssid: str, password: str):
+        """Connect to WiFi station."""
+        self._send_command({
+            "T": CommandCode.SET_STA.value,
+            "ssid": ssid,
+            "password": password
+        })
 
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
-
-
-# Example usage:
-if __name__ == "__main__":
-    # Auto-detect connection (tries HTTP first, then serial)
-    with RoArmController(connection_type="serial", serial_port="/dev/ttyUSB0") as arm:
-        print("=== RoArm Debug Session ===")
-
-        # First, get current status
-        print("\n1. Getting current status...")
-        status = arm.get_status()
-        print("Current status:", status)
-
-        # Try to reset the arm
-        print("\n2. Sending reset command...")
-        reset_result = arm.reset()
-        print("Reset result:", reset_result)
-
-        # Wait for reset to complete
-        print("Waiting 3 seconds for reset...")
-        time.sleep(3)
-
-        # Check status after reset
-        print("\n3. Status after reset:")
-        status = arm.get_status()
-        print("Status:", status)
-
-        # Try moving joint 1
-        print("\n4. Moving joint 1 to 90 degrees...")
-        move_result = arm.move_joint(1, 90, 20)
-        print("Move result:", move_result)
-
-        # Wait and check status
-        print("Waiting 2 seconds...")
-        time.sleep(2)
-        status = arm.get_status()
-        print("Status after move:", status)
+    def reboot_wifi(self):
+        """Reboot WiFi module (CMD_WIFI_ON_BOOT)."""
+        self._send_command({"T": CommandCode.WIFI_ON_BOOT.value, "cmd": 3})
