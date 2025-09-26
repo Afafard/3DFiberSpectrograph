@@ -1,0 +1,8 @@
+{
+  "baudrate": 115200,
+  "use_http": true,
+  "left_arm_ip": "192.168.1.255",
+  "right_arm_ip": "192.168.1.233",
+  "right_arm_port": "/dev/ttyUSB0",
+  "left_arm_port": "/dev/ttyUSB1"
+}

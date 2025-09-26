@@ -101,8 +101,8 @@ class ArmCommander:
 # Example usage:
 if __name__ == "__main__":
     with ArmCommander() as commander:
-        response = commander.send_json_command({"T": 401, "cmd": 3})
+        response = commander.send_json_command({"T":100})
         if response:
-            print("WiFi mode set to AP+STA successfully.")
+            print("Response received from device.")
         else:
             print("Failed to set WiFi mode.")
