@@ -144,7 +144,7 @@ class RoArmM3:
                         wrist: float = 0.0, roll: float = 0.0, hand: float = 1.57,
                         spd: int = 0, acc: int = 10):
         """
-        Move all joints simultaneously in radians.
+        Move all joints simultaneously in ra
         Default positions are near home (elbow at 90°, gripper closed).
         """
         # Validate ranges
@@ -381,3 +381,47 @@ class RoArmM3:
     def reboot_wifi(self):
         """Reboot WiFi module (CMD_WIFI_ON_BOOT)."""
         self._send_command({"T": CommandCode.WIFI_ON_BOOT.value, "cmd": 3})
+
+
+if __name__ == '__main__':
+
+    import serial
+
+    class SerialTransport:
+        def __init__(self, port: str, baudrate=115200):
+            self.ser = serial.Serial(port, baudrate, timeout=1)
+
+        def send(self, data: str):
+            self.ser.write(data.encode('utf-8'))
+
+        def recv(self) -> str:
+            line = self.ser.readline().decode('utf-8').strip()
+            return line
+
+    # Usage:
+    arm = RoArmM3(SerialTransport("/dev/ttyUSB0"))
+    time.sleep(1)
+
+    # Move to home position
+    arm.reset()
+    time.sleep(1)
+    feedback = arm.get_feedback()
+
+    print(feedback)
+    # # Open gripper fully
+    # arm.set_gripper_rad(1.08)
+    #
+    # # Move elbow to 90° (in radians)
+    # arm.move_joint_rad(Joint.ELBOW, 1.57)
+    #
+    # # Move end-effector to (200, 0, 150) mm
+    # arm.move_to_xyz(x=200, y=0, z=150)
+    #
+    # # Get current position
+    # feedback = arm.get_feedback()
+    # if feedback:
+    #     print(f"Current X: {feedback['x']:.2f} mm, Y: {feedback['y']:.2f} mm")
+    #     print(f"Gripper angle: {feedback['g']:.3f} rad")
+    #
+    # # Reboot
+    # arm.reboot()
